@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { initProxy } from './lib/proxy.js';
 import { runExtractJob } from './lib/pipeline.js';
+
+await initProxy();
 
 function printHelp() {
   console.log(`

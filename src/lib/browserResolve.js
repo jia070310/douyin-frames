@@ -1,17 +1,21 @@
 import { chromium } from 'playwright';
 import { extractAwemeId, normalizeDouyinInput } from './douyin.js';
+import { getPlaywrightProxy } from './proxy.js';
 
 /**
  * 用无头浏览器打开抖音网页版，严格绑定 aweme_id 拿原视频直链。
  * 避免误抓「推荐视频 / 相关视频」的播放地址。
+ * 机房 IP 请配置 DOUYIN_PROXY（住宅/移动代理）。
  */
 export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
   const normalized = await normalizeDouyinInput(inputUrl);
   const awemeId = extractAwemeId(normalized);
   const pageUrl = `https://www.douyin.com/video/${awemeId}`;
+  const proxy = getPlaywrightProxy();
 
   const browser = await chromium.launch({
     headless: true,
+    proxy,
     args: [
       '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
@@ -52,10 +56,21 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
         const url = response.url();
         const ct = (response.headers()['content-type'] || '').toLowerCase();
 
-        // 详情 API：只接受目标 aweme_id
-        if (/\/aweme\/v1\/web\/aweme\/detail\/?/i.test(url) && ct.includes('json')) {
-          const data = await response.json().catch(() => null);
-          const item = data?.aweme_detail || null;
+        // 详情 / 相关 JSON：只接受目标 aweme_id
+        if (
+          (/\/aweme\/v1\/web\/aweme\/detail\/?/i.test(url) ||
+            /iteminfo|aweme\/detail/i.test(url)) &&
+          (ct.includes('json') || ct.includes('text/plain'))
+        ) {
+          const text = await response.text().catch(() => '');
+          if (!text) return;
+          let data = null;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            return;
+          }
+          const item = data?.aweme_detail || data?.item_list?.[0] || null;
           if (item && String(item.aweme_id) === String(awemeId)) {
             applyItem(found, item, awemeId);
           }
@@ -66,7 +81,6 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
         if (isLikelyMediaUrl(url, ct) && urlMatchesAweme(url, awemeId)) {
           const clean = url.replace(/playwm/g, 'play');
           pushCandidate(found, clean);
-          // 优先保留带 __vid= 的直链
           if (!found.videoUrl || /__vid=/.test(clean)) {
             found.videoUrl = clean;
           }
@@ -76,6 +90,13 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
       }
     });
 
+    // 先拿 ttwid 等 cookie，再进作品页
+    await page.goto('https://www.douyin.com/', {
+      waitUntil: 'domcontentloaded',
+      timeout: Math.min(timeoutMs, 30_000),
+    }).catch(() => {});
+    await page.waitForTimeout(1500);
+
     await page.goto(pageUrl, {
       waitUntil: 'domcontentloaded',
       timeout: timeoutMs,
@@ -83,7 +104,6 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
 
     await page.waitForSelector('video', { timeout: 20_000 }).catch(() => {});
 
-    // 尽量停在当前作品，避免连播切到推荐
     await page.evaluate(() => {
       try {
         localStorage.setItem('douyin_pc_web_auto_play_next', '0');
@@ -102,8 +122,10 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
       }
     }).catch(() => {});
 
-    const deadline = Date.now() + Math.min(timeoutMs, 25_000);
+    const deadline = Date.now() + Math.min(timeoutMs, 28_000);
     while (Date.now() < deadline) {
+      if (found.videoUrl) break;
+
       const fromDom = await page.evaluate((id) => {
         const videos = [...document.querySelectorAll('video')];
         const srcs = videos
@@ -127,7 +149,9 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
             ?.textContent?.trim() ||
           document.title.replace(/\s*-\s*抖音\s*$/, '').trim();
 
-        return { matched, srcs, title };
+        const stuck = (document.body?.innerText || '').includes('视频数据加载中');
+
+        return { matched, srcs, title, stuck };
       }, awemeId);
 
       if (fromDom.title && !found.desc) found.desc = fromDom.title;
@@ -138,17 +162,14 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
         break;
       }
 
-      // 已有 detail 解析出的地址也可结束
       if (found.videoUrl && found.videoUri) break;
       await page.waitForTimeout(400);
     }
 
-    // 有 videoUri 时优先走 1080p 无水印播放接口（画质通常更好）
     if (found.videoUri) {
-      const hi =
-        `https://aweme.snssdk.com/aweme/v1/play/?video_id=${encodeURIComponent(
-          found.videoUri,
-        )}&ratio=1080p&line=0`;
+      const hi = `https://aweme.snssdk.com/aweme/v1/play/?video_id=${encodeURIComponent(
+        found.videoUri,
+      )}&ratio=1080p&line=0`;
       pushCandidate(found, hi);
       found.videoUrl = hi;
     }
@@ -159,12 +180,14 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
     }
 
     if (!found.videoUrl) {
+      const hint = proxy
+        ? '请确认代理为住宅/移动线路且可访问抖音'
+        : '当前服务器机房 IP 易被抖音拦截，请配置环境变量 DOUYIN_PROXY（住宅/移动代理）后重启';
       throw new Error(
-        '浏览器模式未能获取【本作品】视频地址（可能被连播/推荐流干扰，或需登录）',
+        `浏览器模式未能获取【本作品】视频地址（可能被风控/需登录）。${hint}`,
       );
     }
 
-    // 最终校验：能识别 id 的链接必须匹配
     if (
       /__vid=|aweme_id=/.test(found.videoUrl) &&
       !urlMatchesAweme(found.videoUrl, awemeId)
@@ -172,14 +195,14 @@ export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
       throw new Error('解析到的视频地址与目标作品 ID 不一致，已中止，避免下错视频');
     }
 
-    // 用浏览器上下文下载更稳（带 cookie / 防盗链）
     let buffer;
     try {
       buffer = await downloadWithContext(context, found.videoUrl);
     } catch (err) {
-      // 1080p 接口失败时回退到已匹配的 CDN 直链
       const fallback = found.candidates.find(
-        (u) => u !== found.videoUrl && (urlMatchesAweme(u, awemeId) || /zjcdn|douyinvod|tos-cn-ve/i.test(u)),
+        (u) =>
+          u !== found.videoUrl &&
+          (urlMatchesAweme(u, awemeId) || /zjcdn|douyinvod|tos-cn-ve/i.test(u)),
       );
       if (!fallback) throw err;
       found.videoUrl = fallback;

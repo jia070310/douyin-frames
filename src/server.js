@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { runExtractJob } from './lib/pipeline.js';
 import { OUTPUT_ROOT, jobDir, ensureDir } from './lib/paths.js';
 import { cleanupOutput, getCleanupConfig, startCleanupScheduler, releaseJob, releaseJobs } from './lib/cleanup.js';
+import { initProxy, getProxyDisplay } from './lib/proxy.js';
+
+await initProxy();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -45,7 +48,11 @@ app.use(express.static(path.join(ROOT, 'public')));
 app.use('/output', express.static(OUTPUT_ROOT));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, cleanup: getCleanupConfig() });
+  res.json({
+    ok: true,
+    cleanup: getCleanupConfig(),
+    proxy: getProxyDisplay(),
+  });
 });
 
 /**
@@ -226,6 +233,11 @@ app.listen(PORT, HOST, () => {
     console.log('生产模式：请用 Nginx/Caddy 反代到二级域名（勿对外暴露端口）');
   } else {
     console.log(`本地访问: http://localhost:${PORT}`);
+  }
+  const proxy = getProxyDisplay();
+  if (proxy) console.log(`抖音出口代理: ${proxy}`);
+  else if (IS_PROD) {
+    console.log('提示：机房 IP 易被抖音风控，建议配置 DOUYIN_PROXY（住宅/移动代理）');
   }
   console.log(`CLI: npm run cli -- "<抖音链接>"`);
 });

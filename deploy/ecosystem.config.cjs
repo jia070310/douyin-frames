@@ -3,6 +3,10 @@
  * 安装：npm i -g pm2
  * 启动：pm2 start deploy/ecosystem.config.cjs
  * 开机：pm2 save && pm2 startup
+ *
+ * 抖音代理请写在项目根目录 .env：
+ *   DOUYIN_PROXY=http://user:pass@host:port
+ * 或 socks5://user:pass@host:port
  */
 module.exports = {
   apps: [

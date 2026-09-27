@@ -1,17 +1,23 @@
 import { chromium } from 'playwright';
-import { extractAwemeId } from './douyin.js';
+import { extractAwemeId, normalizeDouyinInput } from './douyin.js';
 
 /**
  * 用无头浏览器打开抖音网页版，严格绑定 aweme_id 拿原视频直链。
  * 避免误抓「推荐视频 / 相关视频」的播放地址。
  */
 export async function resolveViaBrowser(inputUrl, { timeoutMs = 60_000 } = {}) {
-  const awemeId = extractAwemeId(inputUrl);
+  const normalized = await normalizeDouyinInput(inputUrl);
+  const awemeId = extractAwemeId(normalized);
   const pageUrl = `https://www.douyin.com/video/${awemeId}`;
 
   const browser = await chromium.launch({
     headless: true,
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
   });
 
   /** @type {{videoUrl:string|null, videoUri:string|null, desc:string, author:string, cover:string|null, candidates:string[]}} */

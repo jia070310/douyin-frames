@@ -18,6 +18,28 @@ const DEFAULT_HEADERS = {
 };
 
 /**
+ * 从任意抖音分享文本/链接中提取可用 URL（优先短链 / 长链）
+ */
+export function extractDouyinUrl(input) {
+  const text = String(input || '').trim();
+  if (!text) throw new Error('请提供抖音视频链接');
+
+  const urlMatch = text.match(
+    /https?:\/\/(?:v\.douyin\.com|(?:www\.)?iesdouyin\.com|(?:www\.)?douyin\.com)\/[^\s"'<>，。；！？）\]]+/i,
+  );
+  if (urlMatch?.[0]) {
+    return urlMatch[0].replace(/[),.;！？]+$/g, '');
+  }
+
+  // 无协议的短链
+  const short = text.match(/(?:^|\s)(v\.douyin\.com\/[A-Za-z0-9_-]+\/?)/i);
+  if (short?.[1]) return `https://${short[1]}`;
+
+  if (/^https?:\/\//i.test(text)) return text;
+  return text;
+}
+
+/**
  * 从任意抖音分享文本/链接中提取 aweme_id
  */
 export function extractAwemeId(input) {
@@ -40,19 +62,67 @@ export function extractAwemeId(input) {
   // 纯数字 ID
   if (/^\d{15,25}$/.test(text)) return text;
 
-  throw new Error('无法从输入中解析抖音视频 ID，请粘贴完整视频链接');
+  throw new Error('无法从输入中解析抖音视频 ID，请粘贴完整视频链接或 v.douyin.com 短链');
 }
 
 /**
  * 解析短链重定向，拿到最终长链
  */
-async function resolveRedirect(url) {
-  const res = await fetch(url, {
-    method: 'GET',
-    redirect: 'follow',
-    headers: DEFAULT_HEADERS,
-  });
-  return res.url || url;
+export async function resolveRedirect(url, { maxHops = 8 } = {}) {
+  let current = url;
+  for (let i = 0; i < maxHops; i++) {
+    const res = await fetch(current, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        ...DEFAULT_HEADERS,
+        'User-Agent': MOBILE_UA,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+
+    const loc = res.headers.get('location');
+    if (loc) {
+      current = new URL(loc, current).href;
+      // 已落到含 video id 的长链则停止
+      if (/douyin\.com\/video\/\d+|iesdouyin\.com\/share\/video\/\d+/i.test(current)) {
+        return current;
+      }
+      continue;
+    }
+
+    // 无 Location：可能已是最终页，或 HTML 里仍有跳转
+    if (res.status >= 200 && res.status < 400) {
+      const finalUrl = res.url || current;
+      if (/douyin\.com\/video\/\d+|iesdouyin\.com\/share\/video\/\d+/i.test(finalUrl)) {
+        return finalUrl;
+      }
+      try {
+        const html = await res.text();
+        const embedded =
+          html.match(/https?:\/\/(?:www\.)?douyin\.com\/video\/\d+/i)?.[0] ||
+          html.match(/https?:\/\/www\.iesdouyin\.com\/share\/video\/\d+/i)?.[0];
+        if (embedded) return embedded;
+      } catch {
+        // ignore
+      }
+      return finalUrl;
+    }
+
+    break;
+  }
+  return current;
+}
+
+/**
+ * 将短链 / 分享文案规范成长链（尽量带 aweme_id）
+ */
+export async function normalizeDouyinInput(input) {
+  let url = extractDouyinUrl(input);
+  if (/v\.douyin\.com/i.test(url)) {
+    url = await resolveRedirect(url);
+  }
+  return url;
 }
 
 function pickBestUrl(candidates = []) {
@@ -241,12 +311,7 @@ async function resolvePlayUrlByUri(videoUri) {
  * 策略：先轻量 HTML/SSR 解析，失败则用 Playwright 拦截直链
  */
 export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
-  let url = String(inputUrl).trim();
-
-  // 短链先展开
-  if (/v\.douyin\.com/i.test(url)) {
-    url = await resolveRedirect(url);
-  }
+  let url = await normalizeDouyinInput(inputUrl);
 
   const awemeId = extractAwemeId(url);
   let meta = await fetchSharePage(awemeId);

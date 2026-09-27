@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>抖音视频逐帧提取</title>
-    <link rel="stylesheet" href="/styles.css?v=7" />
+    <link rel="stylesheet" href="/styles.css?v=9" />
   </head>
   <body>
     <main class="wrap">
@@ -17,14 +17,31 @@
       <form id="form" class="panel">
         <label class="field">
           <span>抖音视频链接</span>
-          <input
-            id="url"
-            name="url"
-            type="url"
-            required
-            placeholder="https://www.douyin.com/video/..."
-            value="https://www.douyin.com/video/7596637348747106985"
-          />
+          <div class="input-with-clear">
+            <input
+              id="url"
+              name="url"
+              type="url"
+              required
+              autocomplete="off"
+              placeholder="例如 https://www.douyin.com/video/…"
+            />
+            <button
+              type="button"
+              id="urlClear"
+              class="clear-btn"
+              hidden
+              aria-label="清除链接"
+              title="清除"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path
+                  fill="currentColor"
+                  d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4z"
+                />
+              </svg>
+            </button>
+          </div>
         </label>
 
         <div class="grid">
@@ -92,6 +109,6 @@
         </div>
       </section>
     </main>
-    <script src="/app.js?v=7" type="module"></script>
+    <script src="/app.js?v=8" type="module"></script>
   </body>
 </html>

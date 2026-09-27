@@ -93,6 +93,51 @@ h1 {
   color: var(--muted);
 }
 
+.input-with-clear {
+  position: relative;
+  display: grid;
+}
+
+.input-with-clear input {
+  padding-right: 2.6rem;
+}
+
+.clear-btn {
+  position: absolute;
+  top: 50%;
+  right: 0.45rem;
+  transform: translateY(-50%);
+  width: 1.85rem;
+  height: 1.85rem;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.clear-btn:hover,
+.clear-btn:hover:not(:disabled) {
+  color: var(--ink);
+  background: rgba(232, 242, 236, 0.08);
+  filter: none;
+  transform: translateY(-50%);
+}
+
+.clear-btn:focus-visible {
+  outline: 2px solid rgba(61, 202, 160, 0.55);
+  outline-offset: 1px;
+}
+
+.clear-btn[hidden] {
+  display: none !important;
+}
+
 input,
 select,
 button {
@@ -109,6 +154,10 @@ select {
   background: #121a16;
   color-scheme: dark;
   outline: none;
+}
+
+input::placeholder {
+  color: rgba(168, 186, 178, 0.55);
 }
 
 select {

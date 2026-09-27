@@ -20,6 +20,8 @@ const viewerStrip = document.getElementById('viewerStrip');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
 const playToggle = document.getElementById('playToggle');
+const urlInput = document.getElementById('url');
+const urlClear = document.getElementById('urlClear');
 
 const JOB_KEY = 'douyin_frames_current_job';
 
@@ -34,8 +36,23 @@ const gallery = {
 enhanceSelects(form);
 modeEl.addEventListener('change', syncModeFields);
 syncModeFields();
+bindUrlClear();
 bindViewer();
 bindJobLifecycle();
+
+function syncUrlClear() {
+  urlClear.hidden = !urlInput.value.trim();
+}
+
+function bindUrlClear() {
+  syncUrlClear();
+  urlInput.addEventListener('input', syncUrlClear);
+  urlClear.addEventListener('click', () => {
+    urlInput.value = '';
+    syncUrlClear();
+    urlInput.focus();
+  });
+}
 
 function syncModeFields() {
   const mode = modeEl.value;
@@ -172,7 +189,7 @@ form.addEventListener('submit', async (e) => {
   const previousJobId = getStoredJobId();
 
   const body = {
-    url: document.getElementById('url').value.trim(),
+    url: urlInput.value.trim(),
     mode: modeEl.value,
     fps: Number(document.getElementById('fps').value) || 1,
     interval: Number(document.getElementById('interval').value) || 1,

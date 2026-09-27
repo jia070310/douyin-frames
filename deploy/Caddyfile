@@ -1,0 +1,16 @@
+# Caddy 反代示例（自动 HTTPS）
+# 安装 Caddy 后：
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# DNS：frames.example.com → 服务器 IP
+
+frames.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:3780 {
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+}

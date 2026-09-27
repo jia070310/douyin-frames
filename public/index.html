@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>抖音视频逐帧提取</title>
+    <link rel="stylesheet" href="/styles.css?v=7" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="hero">
+        <p class="brand">Douyin Frames</p>
+        <h1>视频链接 → 原片 → 逐帧图片</h1>
+        <p class="sub">粘贴抖音视频链接，下载原视频并用 FFmpeg 导出帧序列，便于后续部署到网站。</p>
+      </header>
+
+      <form id="form" class="panel">
+        <label class="field">
+          <span>抖音视频链接</span>
+          <input
+            id="url"
+            name="url"
+            type="url"
+            required
+            placeholder="https://www.douyin.com/video/..."
+            value="https://www.douyin.com/video/7596637348747106985"
+          />
+        </label>
+
+        <div class="grid">
+          <label class="field">
+            <span>采样方式</span>
+            <select id="mode" name="mode">
+              <option value="every">逐帧（每帧一张）</option>
+              <option value="fps">按帧率采样</option>
+              <option value="seconds">按时间间隔</option>
+            </select>
+          </label>
+
+          <label class="field" id="fpsField" hidden>
+            <span>每秒帧数 (fps)</span>
+            <input id="fps" name="fps" type="number" min="0.1" step="0.1" value="1" />
+          </label>
+
+          <label class="field" id="intervalField" hidden>
+            <span>间隔秒数</span>
+            <input id="interval" name="interval" type="number" min="0.1" step="0.1" value="1" />
+          </label>
+
+          <label class="field">
+            <span>图片格式</span>
+            <select id="format" name="format">
+              <option value="jpg">JPG</option>
+              <option value="png">PNG</option>
+              <option value="webp">WebP</option>
+            </select>
+          </label>
+        </div>
+
+        <p class="hint">提示：完整「逐帧」会生成大量图片。长视频建议先用「按帧率」或「按时间间隔」试跑。</p>
+
+        <button type="submit" id="submit">开始提取</button>
+      </form>
+
+      <section id="status" class="panel status" hidden>
+        <p id="statusText">准备中…</p>
+        <div class="bar"><div id="barFill"></div></div>
+      </section>
+
+      <section id="result" class="panel result" hidden>
+        <div class="meta" id="meta"></div>
+        <div class="actions">
+          <a id="videoLink" href="#" target="_blank" rel="noopener">下载原视频</a>
+          <a id="jsonLink" href="#" target="_blank" rel="noopener">查看结果 JSON</a>
+          <a id="openFrame" href="#" target="_blank" rel="noopener">打开当前帧</a>
+          <button type="button" id="saveFrame" class="linkish">保存当前帧</button>
+          <button type="button" id="closeJob" class="linkish">关闭任务</button>
+        </div>
+
+        <div class="viewer" id="viewer" hidden>
+          <div class="viewer__stage">
+            <button type="button" class="viewer__nav viewer__nav--prev" id="prevBtn" aria-label="上一帧">‹</button>
+            <img id="viewerImg" class="viewer__img" alt="当前帧预览" />
+            <button type="button" class="viewer__nav viewer__nav--next" id="nextBtn" aria-label="下一帧">›</button>
+          </div>
+          <div class="viewer__toolbar">
+            <span id="viewerIndex">0 / 0</span>
+            <input id="viewerSlider" class="viewer__slider" type="range" min="0" max="0" value="0" step="1" />
+            <button type="button" id="playToggle" class="viewer__play">自动播放</button>
+          </div>
+          <div class="viewer__strip" id="viewerStrip" aria-label="帧缩略图"></div>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js?v=7" type="module"></script>
+  </body>
+</html>

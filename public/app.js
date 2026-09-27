@@ -225,8 +225,16 @@ async function startExtract() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const created = await create.json();
-    if (!create.ok) throw new Error(created.error || '创建任务失败');
+    const raw = await create.text();
+    let created;
+    try {
+      created = raw ? JSON.parse(raw) : {};
+    } catch {
+      throw new Error(
+        create.ok ? '服务器返回了无法解析的响应' : `创建任务失败（HTTP ${create.status}）`,
+      );
+    }
+    if (!create.ok) throw new Error(created.error || `创建任务失败（HTTP ${create.status}）`);
 
     setStoredJobId(created.jobId);
     gallery.jobId = created.jobId;

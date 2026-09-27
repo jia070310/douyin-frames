@@ -32,9 +32,9 @@ app.use(
     allowedOrigins.length
       ? {
           origin(origin, cb) {
-            // 同域请求 / curl 无 Origin 时放行
+            // 同域 / 无 Origin（curl、部分浏览器导航）放行；拒绝时不要 throw，否则整请求 500
             if (!origin || allowedOrigins.includes(origin)) cb(null, true);
-            else cb(new Error('CORS blocked'));
+            else cb(null, false);
           },
         }
       : undefined,

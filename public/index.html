@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>抖音视频逐帧提取</title>
-    <link rel="stylesheet" href="/styles.css?v=9" />
+    <link rel="stylesheet" href="/styles.css?v=10" />
   </head>
   <body>
     <main class="wrap">
@@ -14,14 +14,15 @@
         <p class="sub">粘贴抖音视频链接，下载原视频并用 FFmpeg 导出帧序列，便于后续部署到网站。</p>
       </header>
 
-      <form id="form" class="panel">
+      <form id="form" class="panel" method="post" action="#" novalidate>
         <label class="field">
           <span>抖音视频链接</span>
           <div class="input-with-clear">
             <input
               id="url"
               name="url"
-              type="url"
+              type="text"
+              inputmode="url"
               required
               autocomplete="off"
               placeholder="例如 https://www.douyin.com/video/…"
@@ -76,7 +77,7 @@
 
         <p class="hint">提示：完整「逐帧」会生成大量图片。长视频建议先用「按帧率」或「按时间间隔」试跑。</p>
 
-        <button type="submit" id="submit">开始提取</button>
+        <button type="button" id="submit">开始提取</button>
       </form>
 
       <section id="status" class="panel status" hidden>
@@ -109,6 +110,6 @@
         </div>
       </section>
     </main>
-    <script src="/app.js?v=8" type="module"></script>
+    <script src="/app.js?v=10" type="module"></script>
   </body>
 </html>

@@ -33,6 +33,16 @@ const gallery = {
   jobId: null,
 };
 
+// 先挡住表单默认提交，避免整页刷新回到初始态
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  startExtract();
+});
+submitBtn.addEventListener('click', (e) => {
+  e.preventDefault();
+  startExtract();
+});
+
 enhanceSelects(form);
 modeEl.addEventListener('change', syncModeFields);
 syncModeFields();
@@ -41,10 +51,12 @@ bindViewer();
 bindJobLifecycle();
 
 function syncUrlClear() {
+  if (!urlClear || !urlInput) return;
   urlClear.hidden = !urlInput.value.trim();
 }
 
 function bindUrlClear() {
+  if (!urlInput || !urlClear) return;
   syncUrlClear();
   urlInput.addEventListener('input', syncUrlClear);
   urlClear.addEventListener('click', () => {
@@ -176,8 +188,18 @@ function enhanceSelects(root) {
   });
 }
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
+let extracting = false;
+
+async function startExtract() {
+  if (extracting) return;
+  const url = (urlInput?.value || '').trim();
+  if (!url) {
+    setStatusError('请先粘贴抖音视频链接');
+    urlInput?.focus();
+    return;
+  }
+
+  extracting = true;
   stopAutoplay();
   resultEl.hidden = true;
   viewer.hidden = true;
@@ -189,7 +211,7 @@ form.addEventListener('submit', async (e) => {
   const previousJobId = getStoredJobId();
 
   const body = {
-    url: urlInput.value.trim(),
+    url,
     mode: modeEl.value,
     fps: Number(document.getElementById('fps').value) || 1,
     interval: Number(document.getElementById('interval').value) || 1,
@@ -218,9 +240,10 @@ form.addEventListener('submit', async (e) => {
   } catch (err) {
     setStatusError(err.message || String(err));
   } finally {
+    extracting = false;
     submitBtn.disabled = false;
   }
-});
+}
 
 async function pollJob(jobId) {
   const labels = {

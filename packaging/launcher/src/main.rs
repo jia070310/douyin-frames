@@ -298,6 +298,21 @@ fn app_icon() -> Option<tao::window::Icon> {
   tao::window::Icon::from_rgba(img.into_raw(), w, h).ok()
 }
 
+fn center_window(window: &tao::window::Window) {
+  let Some(monitor) = window
+    .current_monitor()
+    .or_else(|| window.primary_monitor())
+  else {
+    return;
+  };
+  let monitor_size = monitor.size();
+  let monitor_pos = monitor.position();
+  let window_size = window.outer_size();
+  let x = monitor_pos.x + (monitor_size.width as i32 - window_size.width as i32) / 2;
+  let y = monitor_pos.y + (monitor_size.height as i32 - window_size.height as i32) / 2;
+  window.set_outer_position(tao::dpi::PhysicalPosition::new(x.max(0), y.max(0)));
+}
+
 #[cfg(windows)]
 fn set_app_user_model_id() {
   #[link(name = "shell32")]
@@ -361,6 +376,7 @@ fn main() {
   if let Some(icon) = app_icon() {
     window.set_window_icon(Some(icon));
   }
+  center_window(&window);
 
   let proxy_ipc = proxy.clone();
   let webview = match WebViewBuilder::new()

@@ -159,6 +159,7 @@ fn main() {
         .min_inner_size(1000.0, 680.0)
         .decorations(false)
         .resizable(true)
+        .center()
         .visible(true)
         .build()?;
 

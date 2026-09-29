@@ -317,13 +317,16 @@ async function writeIss() {
 
 [Setup]
 AppId={{B7E2C4A1-9F3D-4E8B-A2C1-5D8E9F0A1B2C}
-AppName={#MyAppName}
+AppName={cm:AppDisplayName}
 AppVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductName=Douyin Frames
+VersionInfoDescription=Douyin Frames
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 DefaultDirName={localappdata}\\Programs\\DouyinFrames
-DefaultGroupName={#MyAppName}
+DefaultGroupName={cm:AppDisplayName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=${OUT.replace(/\\/g, '/')}
@@ -343,28 +346,33 @@ Name: "japanese"; MessagesFile: "compiler:Languages\\Japanese.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\\Korean.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
 Source: "app\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\\{#MyAppName}"; Filename: "{app}\\{#MyAppExeName}"
-Name: "{group}\\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\\{#MyAppName}"; Filename: "{app}\\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\\{cm:AppDisplayName}"; Filename: "{app}\\{#MyAppExeName}"
+Name: "{group}\\{cm:UninstallProgram,{cm:AppDisplayName}}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\\{cm:AppDisplayName}"; Filename: "{app}\\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{cm:AppDisplayName}}"; Flags: nowait postinstall skipifsilent
 
 [CustomMessages]
+chinesesimplified.AppDisplayName=抖音抽帧
 chinesesimplified.CreateDesktopIcon=创建桌面快捷方式
 chinesesimplified.AdditionalIcons=附加图标：
+chinesetraditional.AppDisplayName=抖音抽幀
 chinesetraditional.CreateDesktopIcon=建立桌面捷徑
 chinesetraditional.AdditionalIcons=附加圖示：
+english.AppDisplayName=Douyin Frames
 english.CreateDesktopIcon=Create a desktop shortcut
 english.AdditionalIcons=Additional icons:
+japanese.AppDisplayName=Douyin Frames
 japanese.CreateDesktopIcon=デスクトップにショートカットを作成する
 japanese.AdditionalIcons=追加アイコン:
+korean.AppDisplayName=Douyin Frames
 korean.CreateDesktopIcon=바탕 화면 바로 가기 만들기
 korean.AdditionalIcons=추가 아이콘:
 

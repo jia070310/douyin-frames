@@ -1,6 +1,6 @@
 {
   "name": "douyin-frames",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "本机工具：解析抖音并 FFmpeg 抽帧（HTTP → yt-dlp → 本机 Edge/Chrome，一般不必登录）",
   "type": "module",
   "main": "src/cli.js",

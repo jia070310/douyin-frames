@@ -81,22 +81,30 @@ export async function ensureYtDlp({ onProgress } = {}) {
 
   if (process.platform !== 'win32') {
     onProgress?.('未找到 yt-dlp，请手动安装并加入 PATH');
+    onProgress?.('下载：https://github.com/yt-dlp/yt-dlp/releases');
     return null;
   }
 
   const dest = localYtDlpPath();
   await fsp.mkdir(path.dirname(dest), { recursive: true });
   const tmp = `${dest}.part`;
+  const manualUrl =
+    'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+  onProgress?.(
+    `未找到 yt-dlp。将尝试自动下载；也可手动下载到 tools\\yt-dlp\\ ：${manualUrl}`,
+  );
   onProgress?.('正在下载 yt-dlp（首次，约 20MB）…');
   try {
-    const res = await httpGet('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe');
+    const res = await httpGet(manualUrl);
     await pipeline(res, createWriteStream(tmp));
     await fsp.rename(tmp, dest);
     onProgress?.('yt-dlp 已就绪');
     return dest;
   } catch (err) {
     await fsp.rm(tmp, { force: true }).catch(() => {});
-    onProgress?.(`yt-dlp 下载失败: ${err?.message || err}`);
+    onProgress?.(
+      `yt-dlp 下载失败: ${err?.message || err}。请手动下载：${manualUrl}`,
+    );
     return null;
   }
 }

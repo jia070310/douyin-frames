@@ -13,6 +13,8 @@
         --muted: #9aa3b2;
         --accent: #3ecf8e;
         --danger: #e86a62;
+        --card: rgba(255, 255, 255, 0.05);
+        --line: rgba(255, 255, 255, 0.1);
       }
       * {
         box-sizing: border-box;
@@ -77,6 +79,69 @@
         color: var(--muted);
         opacity: 0.8;
       }
+      .deps {
+        display: none;
+        text-align: left;
+        width: min(440px, 92vw);
+        margin: 8px auto 0;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--card);
+        gap: 10px;
+      }
+      .deps.is-on {
+        display: grid;
+      }
+      .deps h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 650;
+      }
+      .deps p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .deps ul {
+        margin: 0;
+        padding-left: 1.1em;
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      .deps a {
+        color: #8ad4ff;
+        word-break: break-all;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .actions button {
+        appearance: none;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .actions button.primary {
+        background: rgba(62, 207, 142, 0.18);
+        border-color: rgba(62, 207, 142, 0.45);
+        color: #b6f5d4;
+      }
+      .actions button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .busy .bar {
+        opacity: 1;
+      }
     </style>
   </head>
   <body>
@@ -85,32 +150,138 @@
       <div class="title">Douyin Frames</div>
       <p class="msg" id="msg">正在准备本机环境…</p>
       <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="deps" id="depsPanel">
+        <h3>缺少依赖：FFmpeg</h3>
+        <p id="depsHint">可自动下载精简包，或自行下载安装（任选其一）。</p>
+        <ul id="depsLinks"></ul>
+        <div class="actions">
+          <button type="button" class="primary" id="btnAuto">自动下载安装</button>
+          <button type="button" id="btnRecheck">我已手动安装，重新检测</button>
+          <button type="button" id="btnSkip">暂时跳过</button>
+        </div>
+      </div>
       <p class="hint">使用系统 Edge/Chrome 应用窗口 · 不附带 Electron</p>
     </div>
     <script>
       const msg = document.getElementById('msg');
       const fill = document.getElementById('fill');
+      const depsPanel = document.getElementById('depsPanel');
+      const depsHint = document.getElementById('depsHint');
+      const depsLinks = document.getElementById('depsLinks');
+      const btnAuto = document.getElementById('btnAuto');
+      const btnRecheck = document.getElementById('btnRecheck');
+      const btnSkip = document.getElementById('btnSkip');
+
+      let choosing = false;
+      let busy = false;
+
+      function setBusy(on) {
+        busy = on;
+        btnAuto.disabled = on;
+        btnRecheck.disabled = on;
+        btnSkip.disabled = on;
+        document.body.classList.toggle('busy', on);
+      }
+
+      function renderDeps(data) {
+        const ffmpeg = data?.deps?.ffmpeg || data?.manuals?.ffmpeg;
+        if (!ffmpeg) return;
+        depsHint.textContent = ffmpeg.hint || '可自动下载，或按下列地址手动安装。';
+        depsLinks.innerHTML = (ffmpeg.urls || [])
+          .map(
+            (u) =>
+              `<li><a href="${u.url}" data-url="${u.url}">${u.label}</a><br /><span style="color:var(--muted)">${u.url}</span></li>`,
+          )
+          .join('');
+      }
+
+      depsLinks.addEventListener('click', async (e) => {
+        const a = e.target.closest('a[data-url]');
+        if (!a) return;
+        e.preventDefault();
+        try {
+          await fetch('/api/boot/deps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'open-url', url: a.dataset.url }),
+          });
+        } catch {
+          window.open(a.dataset.url, '_blank', 'noopener');
+        }
+      });
+
+      async function postAction(action) {
+        setBusy(true);
+        try {
+          const res = await fetch('/api/boot/deps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            msg.textContent = data.error || '操作失败';
+            msg.classList.add('is-error');
+            if (data.deps) {
+              choosing = true;
+              depsPanel.classList.add('is-on');
+              renderDeps({ deps: data.deps });
+            }
+            return;
+          }
+          if (data.ok === false) {
+            msg.textContent = data.error || '仍未检测到依赖';
+            msg.classList.add('is-error');
+            return;
+          }
+          msg.classList.remove('is-error');
+        } catch (err) {
+          msg.textContent = err?.message || '请求失败';
+          msg.classList.add('is-error');
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      btnAuto.addEventListener('click', () => postAction('auto'));
+      btnRecheck.addEventListener('click', () => postAction('recheck'));
+      btnSkip.addEventListener('click', () => postAction('skip'));
+
+      function goApp() {
+        const q = new URLSearchParams(location.search);
+        const shell = q.get('shell') === '1' ? '?shell=1' : '';
+        location.replace('/' + shell);
+      }
 
       async function tick() {
         try {
           const res = await fetch('/api/boot');
           const data = await res.json();
           if (data.message) msg.textContent = data.message;
-          msg.classList.toggle('is-error', data.stage === 'error');
+          msg.classList.toggle('is-error', data.stage === 'error' || !!data.error);
+
           if (typeof data.percent === 'number') {
             fill.style.width = Math.max(8, Math.min(100, data.percent)) + '%';
           }
+
+          if (data.needDeps || data.stage === 'need_deps') {
+            choosing = true;
+            depsPanel.classList.add('is-on');
+            renderDeps(data);
+          } else if (!busy) {
+            depsPanel.classList.remove('is-on');
+            choosing = false;
+          }
+
           if (data.ready) {
-            const q = new URLSearchParams(location.search);
-            const shell = q.get('shell') === '1' ? '?shell=1' : '';
-            location.replace('/' + shell);
+            goApp();
             return;
           }
-          if (data.stage === 'error') return;
+          if (data.stage === 'error' && !data.needDeps) return;
         } catch {
-          msg.textContent = '等待本机服务…';
+          if (!choosing) msg.textContent = '等待本机服务…';
         }
-        setTimeout(tick, 500);
+        setTimeout(tick, choosing && !busy ? 1200 : 500);
       }
       tick();
     </script>

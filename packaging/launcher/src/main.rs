@@ -38,6 +38,14 @@ fn to_wide(s: &str) -> Vec<u16> {
 }
 
 fn alert(msg: &str) {
+  message_box(msg, 0x10); // MB_ICONERROR
+}
+
+fn ask_yes_no(msg: &str) -> bool {
+  message_box(msg, 0x24) == 6 // MB_YESNO|MB_ICONQUESTION, IDYES=6
+}
+
+fn message_box(msg: &str, flags: u32) -> i32 {
   #[link(name = "user32")]
   extern "system" {
     fn MessageBoxW(
@@ -49,14 +57,21 @@ fn alert(msg: &str) {
   }
   let text = to_wide(msg);
   let caption = to_wide("Douyin Frames");
-  unsafe {
-    MessageBoxW(
-      std::ptr::null_mut(),
-      text.as_ptr(),
-      caption.as_ptr(),
-      0x10,
-    );
+  unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), caption.as_ptr(), flags) }
+}
+
+fn open_url(url: &str) {
+  let mut cmd = Command::new("cmd");
+  cmd.args(["/c", "start", "", url])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000);
   }
+  let _ = cmd.spawn();
 }
 
 fn append_log(root: &PathBuf, line: &str) {
@@ -172,7 +187,36 @@ fn resolve_node(root: &PathBuf) -> Result<PathBuf, String> {
     return Ok(p);
   }
   let cache_dir = runtime_dir().join("node");
-  download_portable_node(root, &cache_dir)
+  if cache_dir.join("node.exe").is_file() {
+    append_log(root, &format!("using cached node: {}", cache_dir.display()));
+    return Ok(cache_dir.join("node.exe"));
+  }
+
+  let prompt = format!(
+    "未检测到 Node.js 18+。\n\n\
+【是】自动下载便携 Node 到本机缓存（约 30MB）\n\
+      {cache}\n\n\
+【否】自行下载安装（将打开官网，也可复制地址）：\n\
+      https://nodejs.org/zh-cn/download/\n\
+      便携 zip：https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip\n\
+      解压后把 node.exe 放到：\n\
+      {cache}\n\
+      或放到应用目录 tools\\node\\\n\n\
+是否自动下载？",
+    cache = cache_dir.display()
+  );
+
+  if ask_yes_no(&prompt) {
+    append_log(root, "user chose auto-download portable Node");
+    return download_portable_node(root, &cache_dir);
+  }
+
+  append_log(root, "user chose manual Node install");
+  open_url("https://nodejs.org/zh-cn/download/");
+  Err(format!(
+    "已取消自动下载。\n\n请安装 Node.js 18+ 后重新打开本程序。\n\n下载地址：\nhttps://nodejs.org/zh-cn/download/\n\n便携包：\nhttps://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip\n\n也可将 node.exe 放到：\n{}",
+    cache_dir.display()
+  ))
 }
 
 fn spawn_backend(root: &PathBuf) -> Result<(Child, u16), String> {

@@ -98,12 +98,73 @@ export function extractAwemeId(input) {
   );
 }
 
+/** 是否为图文 / note 链接（非视频） */
+export function looksLikeNoteInput(input) {
+  return /\/note\/\d+/i.test(String(input || ''));
+}
+
 /**
- * 若能抽出作品 ID，规范为 https://www.douyin.com/video/{id}
+ * 若能抽出作品 ID，规范为作品页长链（视频 → /video/，图文 → /note/）
  */
 export function toCanonicalVideoUrl(input) {
   const awemeId = extractAwemeId(input);
+  if (looksLikeNoteInput(input)) {
+    return `https://www.douyin.com/note/${awemeId}`;
+  }
   return `https://www.douyin.com/video/${awemeId}`;
+}
+
+/**
+ * 从 aweme 图文结构里抽出图片直链（优先原图 / download）
+ * @param {object} item
+ * @returns {string[]}
+ */
+export function pickImageUrlsFromItem(item) {
+  const list =
+    item?.images ||
+    item?.image_list ||
+    item?.imageList ||
+    item?.image_infos ||
+    [];
+  if (!Array.isArray(list) || !list.length) return [];
+
+  const score = (u) => {
+    const s = String(u || '');
+    let n = 0;
+    if (/~noop\./i.test(s)) n += 50;
+    if (/biz_tag=aweme_images/i.test(s)) n += 30;
+    if (/tplv-dy-aweme-images/i.test(s)) n += 20;
+    if (/download/i.test(s)) n += 15;
+    if (/:q100|:q90/i.test(s)) n += 10;
+    if (/:q75/i.test(s)) n += 5;
+    if (/RELATED_AWEME|origshort-autoq|image-cut-tos/i.test(s)) n -= 40;
+    return n;
+  };
+
+  /** @type {string[]} */
+  const out = [];
+  for (const im of list) {
+    if (!im) continue;
+    if (typeof im === 'string') {
+      out.push(im);
+      continue;
+    }
+    const candidates = [
+      ...(Array.isArray(im.download_url_list) ? im.download_url_list : []),
+      ...(Array.isArray(im.downloadUrlList) ? im.downloadUrlList : []),
+      ...(Array.isArray(im.url_list) ? im.url_list : []),
+      ...(Array.isArray(im.urlList) ? im.urlList : []),
+      im.origin_url,
+      im.originUrl,
+      im.url,
+    ]
+      .flat()
+      .filter((u) => typeof u === 'string' && /^https?:\/\//i.test(u));
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => score(b) - score(a));
+    out.push(candidates[0]);
+  }
+  return [...new Set(out)];
 }
 
 /**
@@ -125,8 +186,8 @@ export async function resolveRedirect(url, { maxHops = 8 } = {}) {
     const loc = res.headers.get('location');
     if (loc) {
       current = new URL(loc, current).href;
-      // 已落到含 video id 的长链则停止
-      if (/douyin\.com\/video\/\d+|iesdouyin\.com\/share\/video\/\d+/i.test(current)) {
+      // 已落到含 video/note id 的长链则停止
+      if (/douyin\.com\/(?:video|note)\/\d+|iesdouyin\.com\/share\/(?:video|note)\/\d+/i.test(current)) {
         return current;
       }
       continue;
@@ -135,14 +196,14 @@ export async function resolveRedirect(url, { maxHops = 8 } = {}) {
     // 无 Location：可能已是最终页，或 HTML 里仍有跳转
     if (res.status >= 200 && res.status < 400) {
       const finalUrl = res.url || current;
-      if (/douyin\.com\/video\/\d+|iesdouyin\.com\/share\/video\/\d+/i.test(finalUrl)) {
+      if (/douyin\.com\/(?:video|note)\/\d+|iesdouyin\.com\/share\/(?:video|note)\/\d+/i.test(finalUrl)) {
         return finalUrl;
       }
       try {
         const html = await res.text();
         const embedded =
-          html.match(/https?:\/\/(?:www\.)?douyin\.com\/video\/\d+/i)?.[0] ||
-          html.match(/https?:\/\/www\.iesdouyin\.com\/share\/video\/\d+/i)?.[0];
+          html.match(/https?:\/\/(?:www\.)?douyin\.com\/(?:video|note)\/\d+/i)?.[0] ||
+          html.match(/https?:\/\/www\.iesdouyin\.com\/share\/(?:video|note)\/\d+/i)?.[0];
         if (embedded) return embedded;
       } catch {
         // ignore
@@ -164,11 +225,13 @@ export async function normalizeDouyinInput(input) {
     url = await resolveRedirect(url);
   }
 
-  // 搜索页、发现页等带 modal_id 的链接 → 标准作品页
+  // 搜索页、发现页等带 modal_id 的链接 → 标准作品页（图文保留 /note/）
   try {
     const awemeId = extractAwemeId(url);
     if (awemeId) {
-      return `https://www.douyin.com/video/${awemeId}`;
+      return looksLikeNoteInput(url) || looksLikeNoteInput(input)
+        ? `https://www.douyin.com/note/${awemeId}`
+        : `https://www.douyin.com/video/${awemeId}`;
     }
   } catch {
     // keep url
@@ -231,6 +294,23 @@ function digVideoMeta(obj, depth = 0) {
       ...(v.bit_rate || []).map((b) => b.play_addr),
     ]);
 
+    const images = pickImageUrlsFromItem(aweme);
+    // 图文作品有时仍带空 video 壳，优先按图片处理
+    if ((!url && !uri) && images.length) {
+      return {
+        awemeId: String(aweme.aweme_id || aweme.awemeId || aweme.group_id || ''),
+        desc: aweme.desc || aweme.title || '',
+        author: aweme.author?.nickname || aweme.author?.unique_id || '',
+        duration: null,
+        videoUri: null,
+        videoUrl: null,
+        cover: images[0] || pickBestUrl([v.cover, v.origin_cover, v.dynamic_cover]),
+        images,
+        contentType: 'images',
+        awemeType: aweme.aweme_type,
+        via: obj.via || aweme.via || undefined,
+      };
+    }
     return {
       awemeId: String(aweme.aweme_id || aweme.awemeId || aweme.group_id || ''),
       desc: aweme.desc || aweme.title || '',
@@ -239,21 +319,49 @@ function digVideoMeta(obj, depth = 0) {
       videoUri: uri,
       videoUrl: url,
       cover: pickBestUrl([v.cover, v.origin_cover, v.dynamic_cover]),
+      images,
+      contentType: images.length ? 'mixed' : 'video',
+      awemeType: aweme.aweme_type,
       via: obj.via || aweme.via || undefined,
     };
+  }
+
+  // 纯图文：有 images、无 video
+  const note =
+    obj.aweme_detail ||
+    obj.aweme ||
+    obj.item ||
+    (Array.isArray(obj.images) && (obj.aweme_id || obj.awemeId) ? obj : null);
+  if (note && !note.video) {
+    const images = pickImageUrlsFromItem(note);
+    if (images.length) {
+      return {
+        awemeId: String(note.aweme_id || note.awemeId || note.group_id || ''),
+        desc: note.desc || note.title || '',
+        author: note.author?.nickname || note.author?.unique_id || '',
+        duration: null,
+        videoUri: null,
+        videoUrl: null,
+        cover: images[0] || null,
+        images,
+        contentType: 'images',
+        awemeType: note.aweme_type,
+        via: obj.via || note.via || undefined,
+      };
+    }
   }
 
   if (Array.isArray(obj)) {
     for (const item of obj) {
       const found = digVideoMeta(item, depth + 1);
-      if (found?.videoUrl || found?.videoUri) return found;
+      if (found?.videoUrl || found?.videoUri || found?.images?.length) return found;
     }
     return null;
   }
 
   for (const key of Object.keys(obj)) {
     const found = digVideoMeta(obj[key], depth + 1);
-    if (found?.videoUrl || found?.videoUri) return found;
+    if (found?.videoUrl || found?.videoUri || found?.images?.length) return found;
   }
   return null;
 }
@@ -282,11 +390,20 @@ function parseEmbeddedJson(html) {
   return null;
 }
 
-async function fetchSharePage(awemeId) {
-  const urls = [
-    `https://www.iesdouyin.com/share/video/${awemeId}`,
-    `https://www.douyin.com/video/${awemeId}`,
-  ];
+async function fetchSharePage(awemeId, { preferNote = false } = {}) {
+  const urls = preferNote
+    ? [
+        `https://www.iesdouyin.com/share/note/${awemeId}`,
+        `https://www.douyin.com/note/${awemeId}`,
+        `https://www.iesdouyin.com/share/video/${awemeId}`,
+        `https://www.douyin.com/video/${awemeId}`,
+      ]
+    : [
+        `https://www.iesdouyin.com/share/video/${awemeId}`,
+        `https://www.douyin.com/video/${awemeId}`,
+        `https://www.iesdouyin.com/share/note/${awemeId}`,
+        `https://www.douyin.com/note/${awemeId}`,
+      ];
   let cookie = '';
   try {
     cookie = await fetchTtwidCookie();
@@ -353,17 +470,21 @@ async function resolvePlayUrlByUri(videoUri) {
     });
 
     const loc = res.headers.get('location');
-    if (loc) return loc;
+    if (loc && /^https?:\/\//i.test(loc) && !/login|captcha/i.test(loc)) {
+      return loc;
+    }
 
-    // 有时直接返回视频流
+    // 有时直接返回视频流（需足够大，避免反爬小包）
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('video') || ct.includes('octet-stream')) {
-      return playApi;
+      const buf = Buffer.from(await res.arrayBuffer().catch(() => new ArrayBuffer(0)));
+      if (buf.length >= 64 * 1024) return playApi;
     }
   } catch {
     // ignore
   }
-  return playApi;
+  // 不再假装 snssdk 地址一定可用（无 Cookie 时常是空壳）
+  return null;
 }
 
 /**
@@ -481,9 +602,10 @@ async function fetchWebDetail(awemeId) {
 export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
   let url = await normalizeDouyinInput(inputUrl);
   const awemeId = extractAwemeId(url);
+  const preferNote = looksLikeNoteInput(url) || looksLikeNoteInput(inputUrl);
 
   let meta =
-    (await fetchSharePage(awemeId)) ||
+    (await fetchSharePage(awemeId, { preferNote })) ||
     (await fetchWebDetail(awemeId)) || {
       awemeId,
       desc: '',
@@ -492,19 +614,43 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
       videoUri: null,
       videoUrl: null,
       cover: null,
+      images: [],
     };
 
   if (!meta.awemeId) meta.awemeId = awemeId;
+  if (!Array.isArray(meta.images)) meta.images = [];
 
   if (meta.videoUri && !meta.videoUrl) {
     const play = await resolvePlayUrlByUri(meta.videoUri);
     if (play) meta.videoUrl = play;
   }
 
-  if (!meta.videoUrl) {
+  // 图文：优先走浏览器抓页面图片（HTTP 分享页常无内嵌数据）
+  const needBrowser =
+    useBrowser &&
+    ((!meta.videoUrl && !meta.videoBuffer && !meta.images?.length) ||
+      (preferNote && !meta.images?.length));
+
+  if (needBrowser) {
+    try {
+      const { resolveViaBrowser } = await import('./browserResolve.js');
+      const browserMeta = await resolveViaBrowser(url, { preferNote });
+      meta = {
+        ...meta,
+        ...browserMeta,
+        images: browserMeta.images?.length ? browserMeta.images : meta.images,
+        via: browserMeta.via || 'browser',
+      };
+    } catch (err) {
+      meta.browserHint = err?.message || String(err);
+    }
+  }
+
+  // yt-dlp 放在浏览器之后：图文不要用它（常只会下到配乐）
+  if (!meta.videoUrl && !meta.videoBuffer && !meta.images?.length && !preferNote) {
     try {
       const { resolveViaYtDlp } = await import('./ytDlp.js');
-      const y = await resolveViaYtDlp(url, { autoInstall: true });
+      const y = await resolveViaYtDlp(url, { autoInstall: true, timeoutMs: 45_000 });
       if (y?.videoUrl) {
         meta.videoUrl = y.videoUrl;
         meta.via = 'yt-dlp';
@@ -518,30 +664,40 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
     }
   }
 
-  if (!meta.videoUrl && useBrowser) {
-    try {
-      const { resolveViaBrowser } = await import('./browserResolve.js');
-      const browserMeta = await resolveViaBrowser(url);
-      meta = { ...meta, ...browserMeta, via: browserMeta.via || 'browser' };
-    } catch (err) {
-      meta.browserHint = err?.message || String(err);
-    }
+  const hasImages = Array.isArray(meta.images) && meta.images.length > 0;
+
+  // 图文优先：有图片时丢掉误抓的配乐/空壳「视频」地址
+  if (hasImages && (preferNote || !meta.videoUrl || isLikelyAudioUrl(meta.videoUrl))) {
+    meta.videoUrl = null;
+    meta.videoUri = null;
+    delete meta.videoBuffer;
+    meta.contentType = 'images';
   }
 
-  if (!meta.videoUrl && !meta.videoBuffer) {
-    const bits = [meta.ytDlpHint, meta.browserHint].filter(Boolean).join('；');
+  if (!meta.videoUrl && !meta.videoBuffer && !hasImages) {
+    const bits = [meta.browserHint, meta.ytDlpHint].filter(Boolean).join('；');
     const hint = bits ? `（${bits}）` : '';
     throw new Error(
-      `未能解析到视频直链${hint}。可稍后重试，或改用「本地视频」上传。`,
+      `未能解析到视频直链或图文图片${hint}。可稍后重试，或改用「本地视频」上传。`,
     );
   }
+
+  const pageUrl = preferNote || (hasImages && !meta.videoUrl)
+    ? `https://www.douyin.com/note/${meta.awemeId}`
+    : `https://www.douyin.com/video/${meta.awemeId}`;
 
   return {
     ...meta,
     sourceUrl: url,
-    pageUrl: `https://www.douyin.com/video/${meta.awemeId}`,
+    pageUrl,
+    contentType: hasImages && !meta.videoUrl && !meta.videoBuffer ? 'images' : meta.contentType || 'video',
     via: meta.via || 'http',
   };
+}
+
+function isLikelyAudioUrl(url) {
+  if (!url) return false;
+  return /\.(mp3|m4a|aac)(\?|$)/i.test(url) || /\/music\/|aweme\/v1\/music/i.test(url);
 }
 
 /**

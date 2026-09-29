@@ -482,7 +482,7 @@ async function startExtract() {
       });
       jobId = created.jobId;
     } else {
-      statusText.textContent = '本机解析抖音并抽帧…';
+      statusText.textContent = '本机解析抖音并处理…';
       const created = await createServerJob({ url, ...options });
       jobId = created.jobId;
     }
@@ -492,7 +492,9 @@ async function startExtract() {
 
     const result = await pollJob(jobId);
     renderResult(result);
-    setStatusDone(`完成：导出 ${result.frames.count} 张图片`);
+    const n = result.frames?.count ?? 0;
+    const isNote = result.contentType === 'images' || result.meta?.contentType === 'images';
+    setStatusDone(isNote ? `完成：图文 ${n} 张图片` : `完成：导出 ${n} 张图片`);
   } catch (err) {
     const msg = err.message || String(err);
     if (/任务不存在/i.test(msg)) clearStoredJobId();
@@ -577,8 +579,8 @@ function friendlyResolveError(msg) {
 async function pollJob(jobId) {
   const labels = {
     queued: '排队中…',
-    resolve: '本机解析抖音视频…',
-    download: '正在下载原视频…',
+    resolve: '本机解析抖音作品…',
+    download: '正在下载…',
     probe: '正在读取视频信息…',
     frames: '正在导出帧图片…',
     done: '完成',
@@ -609,16 +611,35 @@ function renderResult(result) {
   setStoredJobId(result.jobId);
 
   const { meta, video, frames } = result;
+  const isNote = result.contentType === 'images' || meta?.contentType === 'images';
+  const typeLabel = isNote ? '图文' : '视频抽帧';
+
   metaEl.innerHTML = `
+    <div><strong>类型</strong>：${escapeHtml(typeLabel)}</div>
     <div><strong>作者</strong>：${escapeHtml(meta.author || '未知')}</div>
     <div><strong>描述</strong>：${escapeHtml(meta.desc || '（无）')}</div>
-    <div><strong>分辨率</strong>：${video.width || '?'}×${video.height || '?'}</div>
-    <div><strong>时长</strong>：${video.duration ? video.duration.toFixed(2) + 's' : '?'}</div>
-    <div><strong>帧数</strong>：${frames.count}</div>
+    ${
+      isNote
+        ? `<div><strong>图片数</strong>：${frames.count}</div>`
+        : `<div><strong>分辨率</strong>：${video?.width || '?'}×${video?.height || '?'}</div>
+    <div><strong>时长</strong>：${video?.duration ? video.duration.toFixed(2) + 's' : '?'}</div>
+    <div><strong>帧数</strong>：${frames.count}</div>`
+    }
     <div><strong>输出目录</strong>：output/${result.jobId}/frames</div>
   `;
 
-  videoLink.href = remoteUrl(result.videoUrl);
+  if (videoLink) {
+    if (isNote || !result.videoUrl) {
+      videoLink.hidden = true;
+      videoLink.removeAttribute('href');
+    } else {
+      videoLink.hidden = false;
+      videoLink.href = remoteUrl(result.videoUrl);
+      videoLink.textContent = '原视频';
+    }
+  }
+  if (openFrame) openFrame.textContent = isNote ? '打开图片' : '打开帧';
+  if (saveFrame) saveFrame.textContent = isNote ? '保存图片' : '保存帧';
   jsonLink.href = remoteUrl(result.resultUrl);
 
   const prefix = remoteUrl(result.framesUrlPrefix);

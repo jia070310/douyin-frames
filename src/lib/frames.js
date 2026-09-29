@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -8,6 +8,41 @@ function ffmpegBin() {
 
 function ffprobeBin() {
   return process.env.FFPROBE_PATH || 'ffprobe';
+}
+
+/** @type {null | 'fps_mode' | 'vsync' | 'none'} */
+let passthroughModeCache = null;
+
+/**
+ * 逐帧导出时禁用丢帧：
+ * - 新 FFmpeg：-fps_mode passthrough（-vsync 已移除）
+ * - 旧 FFmpeg：-vsync 0
+ */
+function detectPassthroughArgs() {
+  if (passthroughModeCache === 'fps_mode') return ['-fps_mode', 'passthrough'];
+  if (passthroughModeCache === 'vsync') return ['-vsync', '0'];
+  if (passthroughModeCache === 'none') return [];
+
+  try {
+    const help = execFileSync(ffmpegBin(), ['-hide_banner', '-h', 'full'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    if (/(^|\s)-fps_mode(\s|\[|:)/m.test(help) || help.includes('-fps_mode')) {
+      passthroughModeCache = 'fps_mode';
+      return ['-fps_mode', 'passthrough'];
+    }
+    if (/(^|\s)-vsync(\s|\[|:)/m.test(help) || help.includes('-vsync')) {
+      passthroughModeCache = 'vsync';
+      return ['-vsync', '0'];
+    }
+  } catch {
+    // 探测失败时优先新语法，失败再在 run 里由用户看到错误
+  }
+  passthroughModeCache = 'fps_mode';
+  return ['-fps_mode', 'passthrough'];
 }
 
 function run(cmd, args, { onLog } = {}) {
@@ -73,8 +108,7 @@ export async function extractFrames({
   const args = ['-y', '-hwaccel', 'auto', '-i', videoPath];
 
   if (mode === 'every') {
-    // 用 -vsync 0（passthrough）兼容旧版 FFmpeg；-fps_mode 需较新版本
-    args.push('-vsync', '0');
+    args.push(...detectPassthroughArgs());
   } else if (mode === 'fps') {
     args.push('-vf', `fps=${Math.max(0.1, Number(fps) || 1)}`);
   } else if (mode === 'seconds') {
@@ -98,9 +132,31 @@ export async function extractFrames({
     totalFrames = undefined;
   }
 
-  // 用 progress 管道粗略估计进度：重新跑一遍带 -progress
-  // 简化：直接执行，完成后统计文件数
-  await run(ffmpegBin(), args, { onLog });
+  try {
+    await run(ffmpegBin(), args, { onLog });
+  } catch (err) {
+    const msg = err?.message || String(err);
+    // 探测误判时自动切换参数再试一次
+    if (mode === 'every' && /Unrecognized option ['"]?fps_mode/i.test(msg)) {
+      passthroughModeCache = 'vsync';
+      const retry = args.map((a) => a);
+      const i = retry.indexOf('-fps_mode');
+      if (i >= 0) {
+        retry.splice(i, 2, '-vsync', '0');
+        await run(ffmpegBin(), retry, { onLog });
+      } else throw err;
+    } else if (mode === 'every' && /Unrecognized option ['"]?vsync/i.test(msg)) {
+      passthroughModeCache = 'fps_mode';
+      const retry = args.map((a) => a);
+      const i = retry.indexOf('-vsync');
+      if (i >= 0) {
+        retry.splice(i, 2, '-fps_mode', 'passthrough');
+        await run(ffmpegBin(), retry, { onLog });
+      } else throw err;
+    } else {
+      throw err;
+    }
+  }
 
   const files = (await fs.readdir(outDir))
     .filter((f) => f.startsWith('frame_') && f.endsWith(`.${ext}`))
@@ -145,7 +201,9 @@ export async function probeVideo(videoPath) {
   });
 
   const info = JSON.parse(stdout);
-  const videoStream = (info.streams || []).find((s) => s.codec_type === 'video');
+  const streams = info.streams || [];
+  const videoStream = streams.find((s) => s.codec_type === 'video');
+  const audioStream = streams.find((s) => s.codec_type === 'audio');
   return {
     duration: Number(info.format?.duration || 0),
     size: Number(info.format?.size || 0),
@@ -153,6 +211,9 @@ export async function probeVideo(videoPath) {
     height: videoStream?.height,
     fps: parseFps(videoStream?.r_frame_rate || videoStream?.avg_frame_rate),
     codec: videoStream?.codec_name,
+    hasVideo: Boolean(videoStream),
+    hasAudio: Boolean(audioStream),
+    audioOnly: !videoStream && Boolean(audioStream),
   };
 }
 

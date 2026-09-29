@@ -8,16 +8,63 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import https from 'node:https';
 import http from 'node:http';
+import os from 'node:os';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * 轻量依赖：只处理 FFmpeg（精简体积）。
- * 不再下载 Chromium / Playwright。
- *
- * 策略：PATH → @ffmpeg-installer 内置 → userData 缓存 → 首次下载精简包
+ * 策略：PATH → @ffmpeg-installer → userData 缓存 →（可选）下载 / 手动安装提示
  */
+
+/** 给用户手动下载安装时的官方/镜像地址 */
+export const MANUAL_DOWNLOADS = {
+  node: {
+    id: 'node',
+    name: 'Node.js',
+    urls: [
+      {
+        label: 'Node.js 官网（推荐安装包）',
+        url: 'https://nodejs.org/zh-cn/download/',
+      },
+      {
+        label: 'Windows x64 便携 zip（v22 LTS 示例）',
+        url: 'https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip',
+      },
+    ],
+    hint:
+      '安装系统 Node 18+，或把 node.exe 放到应用目录 tools\\node\\，或 %LOCALAPPDATA%\\DouyinFrames\\runtime\\node\\',
+  },
+  ffmpeg: {
+    id: 'ffmpeg',
+    name: 'FFmpeg',
+    urls: [
+      {
+        label: 'Gyan essentials（Windows 精简包，推荐）',
+        url: 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+      },
+      {
+        label: 'GitHub 备用 essentials 7.1',
+        url: 'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip',
+      },
+      {
+        label: 'FFmpeg 官网',
+        url: 'https://ffmpeg.org/download.html',
+      },
+    ],
+    hint:
+      '解压后将 ffmpeg.exe 与 ffprobe.exe 加入 PATH，或复制到 %APPDATA%\\DouyinFrames\\runtime\\ffmpeg\\（也可放到应用目录 tools\\ffmpeg\\）',
+  },
+};
+
+export function runtimeDataDir() {
+  return path.join(
+    process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+    'DouyinFrames',
+    'runtime',
+  );
+}
 
 function whichSync(cmd) {
   const isWin = process.platform === 'win32';
@@ -137,66 +184,121 @@ async function findBinInDir(root, names) {
   return null;
 }
 
+function applyFfmpegEnv(ffmpeg, ffprobe) {
+  process.env.FFMPEG_PATH = ffmpeg;
+  process.env.FFPROBE_PATH = ffprobe;
+}
+
 /**
- * @param {{ dataDir: string, onProgress?: (msg:string, pct?:number)=>void }} opts
+ * 仅检测本机是否已有 FFmpeg（不下载）
+ * @param {{ dataDir?: string }} [opts]
  */
-export async function ensureFfmpeg(opts) {
-  const { dataDir, onProgress } = opts;
-  const report = (msg, pct) => onProgress?.(msg, pct);
+export async function findExistingFfmpeg(opts = {}) {
+  const dataDir = opts.dataDir || runtimeDataDir();
 
   const fromEnv = process.env.FFMPEG_PATH;
   if (fromEnv && (await fileExists(fromEnv))) {
-    process.env.FFMPEG_PATH = fromEnv;
-    process.env.FFPROBE_PATH =
+    const ffprobe =
       process.env.FFPROBE_PATH || fromEnv.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1');
-    report('已使用环境变量中的 FFmpeg', 100);
-    return { ffmpeg: process.env.FFMPEG_PATH, ffprobe: process.env.FFPROBE_PATH, source: 'env' };
+    return { ffmpeg: fromEnv, ffprobe, source: 'env' };
   }
 
   const pathFfmpeg = whichSync('ffmpeg');
   const pathFfprobe = whichSync('ffprobe');
   if (pathFfmpeg && pathFfprobe) {
-    process.env.FFMPEG_PATH = pathFfmpeg;
-    process.env.FFPROBE_PATH = pathFfprobe;
-    report('已检测到系统 FFmpeg', 100);
     return { ffmpeg: pathFfmpeg, ffprobe: pathFfprobe, source: 'path' };
   }
 
   const bundledFfmpeg = tryRequireInstaller('@ffmpeg-installer/ffmpeg');
   const bundledFfprobe = tryRequireInstaller('@ffprobe-installer/ffprobe');
   if (bundledFfmpeg && bundledFfprobe) {
-    process.env.FFMPEG_PATH = bundledFfmpeg;
-    process.env.FFPROBE_PATH = bundledFfprobe;
-    report('已使用内置精简 FFmpeg', 100);
     return { ffmpeg: bundledFfmpeg, ffprobe: bundledFfprobe, source: 'bundled' };
+  }
+
+  // 应用目录 tools/ffmpeg（便携包）
+  const root = process.env.DOUYIN_FRAMES_ROOT || path.resolve(__dirname, '../..');
+  const toolsFfmpeg = path.join(
+    root,
+    'tools',
+    'ffmpeg',
+    process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg',
+  );
+  const toolsFfprobe = path.join(
+    root,
+    'tools',
+    'ffmpeg',
+    process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe',
+  );
+  if ((await fileExists(toolsFfmpeg)) && (await fileExists(toolsFfprobe))) {
+    return { ffmpeg: toolsFfmpeg, ffprobe: toolsFfprobe, source: 'tools' };
   }
 
   const binDir = path.join(dataDir, 'ffmpeg');
   const localFfmpeg = path.join(binDir, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   const localFfprobe = path.join(binDir, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
   if ((await fileExists(localFfmpeg)) && (await fileExists(localFfprobe))) {
-    process.env.FFMPEG_PATH = localFfmpeg;
-    process.env.FFPROBE_PATH = localFfprobe;
-    report('已使用本机缓存 FFmpeg', 100);
     return { ffmpeg: localFfmpeg, ffprobe: localFfprobe, source: 'cache' };
   }
 
-  if (process.platform !== 'win32') {
-    throw new Error('未找到 FFmpeg，请先安装 ffmpeg/ffprobe 并加入 PATH');
+  return null;
+}
+
+/**
+ * @param {{
+ *   dataDir?: string,
+ *   onProgress?: (msg:string, pct?:number)=>void,
+ *   autoDownload?: boolean  缺省 true：CLI 自动下；桌面启动页可先 false 再由用户选择
+ * }} opts
+ */
+export async function ensureFfmpeg(opts = {}) {
+  const dataDir = opts.dataDir || runtimeDataDir();
+  const onProgress = opts.onProgress;
+  const autoDownload = opts.autoDownload !== false;
+  const report = (msg, pct) => onProgress?.(msg, pct);
+
+  const existing = await findExistingFfmpeg({ dataDir });
+  if (existing) {
+    applyFfmpegEnv(existing.ffmpeg, existing.ffprobe);
+    const labels = {
+      env: '已使用环境变量中的 FFmpeg',
+      path: '已检测到系统 FFmpeg',
+      bundled: '已使用内置精简 FFmpeg',
+      tools: '已使用应用目录 tools\\ffmpeg',
+      cache: '已使用本机缓存 FFmpeg',
+    };
+    report(labels[existing.source] || 'FFmpeg 已就绪', 100);
+    return existing;
   }
 
-  // 精简 essentials 包（比 shared 全量小很多）
+  if (!autoDownload) {
+    report('未找到 FFmpeg，可选择自动下载或手动安装', 0);
+    return {
+      ffmpeg: null,
+      ffprobe: null,
+      source: 'missing',
+      manual: MANUAL_DOWNLOADS.ffmpeg,
+    };
+  }
+
+  if (process.platform !== 'win32') {
+    const tip = MANUAL_DOWNLOADS.ffmpeg.urls.map((u) => `${u.label}: ${u.url}`).join('\n');
+    throw new Error(
+      `未找到 FFmpeg，请先安装 ffmpeg/ffprobe 并加入 PATH。\n手动下载：\n${tip}`,
+    );
+  }
+
   report('正在下载精简 FFmpeg（首次）…', 0);
-  const zipUrl =
-    'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip';
+  const zipUrl = MANUAL_DOWNLOADS.ffmpeg.urls[0].url;
   const zipPath = path.join(dataDir, 'ffmpeg-essentials.zip');
   const extractTo = path.join(dataDir, 'ffmpeg-extract');
+  const binDir = path.join(dataDir, 'ffmpeg');
+  const localFfmpeg = path.join(binDir, 'ffmpeg.exe');
+  const localFfprobe = path.join(binDir, 'ffprobe.exe');
+
   try {
     await downloadFile(zipUrl, zipPath, (pct) => report(`下载 FFmpeg ${pct}%`, pct));
   } catch {
-    // 备用源
-    const alt =
-      'https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip';
+    const alt = MANUAL_DOWNLOADS.ffmpeg.urls[1].url;
     await downloadFile(alt, zipPath, (pct) => report(`下载 FFmpeg(备用) ${pct}%`, pct));
   }
   report('正在解压 FFmpeg…', 0);
@@ -210,16 +312,15 @@ export async function ensureFfmpeg(opts) {
   await fsp.rm(zipPath, { force: true }).catch(() => {});
   await fsp.rm(extractTo, { recursive: true, force: true }).catch(() => {});
 
-  process.env.FFMPEG_PATH = localFfmpeg;
-  process.env.FFPROBE_PATH = localFfprobe;
+  applyFfmpegEnv(localFfmpeg, localFfprobe);
   report('FFmpeg 已就绪', 100);
   return { ffmpeg: localFfmpeg, ffprobe: localFfprobe, source: 'downloaded' };
 }
 
 /**
- * @param {{ dataDir: string, onProgress?: (msg:string, pct?:number)=>void }} opts
+ * @param {{ dataDir?: string, onProgress?: (msg:string, pct?:number)=>void, autoDownload?: boolean }} opts
  */
-export async function ensureRuntimeDeps(opts) {
+export async function ensureRuntimeDeps(opts = {}) {
   const ffmpeg = await ensureFfmpeg(opts);
   return { ffmpeg };
 }

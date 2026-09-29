@@ -9,12 +9,23 @@ Douyin Frames 便携包（轻量）
 双击 DouyinFrames.vbs（无黑窗）
 或 DouyinFrames.cmd
 
-依赖
+依赖（可自动下载，也可手动安装）
 ----
-1. Node.js 18+（系统安装，或把 node.exe 放到 tools\node\）
+1. Node.js 18+
+   - 自动：首次启动可按提示下载便携 Node
+   - 手动：https://nodejs.org/zh-cn/download/
+     便携 zip：https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip
+     把 node.exe 放到 tools\node\ 或 %LOCALAPPDATA%\DouyinFrames\runtime\node\
+
 2. Edge 或 Chrome（Windows 通常已有 Edge）
-3. FFmpeg：有 PATH 则直接用；没有则首次运行自动下载精简版到
-   %APPDATA%\DouyinFrames\runtime\
+
+3. FFmpeg
+   - 自动：启动页可选「自动下载安装」
+   - 手动：https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+     备用：https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip
+     官网：https://ffmpeg.org/download.html
+     解压后把 ffmpeg.exe / ffprobe.exe 放到 PATH，
+     或 %APPDATA%\DouyinFrames\runtime\ffmpeg\，或本目录 tools\ffmpeg\
 
 解析抖音时优先本机 Edge/Chrome 无头（不必另装 Playwright 浏览器，也不必登录）
 

@@ -16,14 +16,24 @@ import { hydrateCookieEnv, loadCookieHeader, saveCookieHeader, cookieNetscapePat
 await initProxy();
 await hydrateCookieEnv();
 
-// 启动时挂上精简 FFmpeg（PATH / npm 包 / 本机缓存）
+// 启动时只检测已有 FFmpeg（不自动下载；桌面启动页 / CLI 再按需安装）
 try {
   const dataDir = path.join(
     process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
     'DouyinFrames',
     'runtime',
   );
-  await ensureFfmpeg({ dataDir, onProgress: (msg) => console.log(`[ffmpeg] ${msg}`) });
+  const found = await ensureFfmpeg({
+    dataDir,
+    autoDownload: false,
+    onProgress: (msg) => console.log(`[ffmpeg] ${msg}`),
+  });
+  if (found?.source === 'missing') {
+    console.warn('[ffmpeg] 未安装。可在启动页选择自动下载，或手动安装：');
+    for (const u of found.manual?.urls || []) {
+      console.warn(`  - ${u.label}: ${u.url}`);
+    }
+  }
 } catch (err) {
   console.warn('[ffmpeg] 未就绪:', err?.message || err);
 }
@@ -64,11 +74,15 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(ROOT, 'public')));
 app.use('/output', express.static(OUTPUT_ROOT));
 
+const PKG = JSON.parse(
+  await fsp.readFile(path.join(ROOT, 'package.json'), 'utf8').catch(() => '{}'),
+);
+
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     name: 'Douyin Frames',
-    version: '1.1.0',
+    version: PKG.version || '1.2.0',
     cleanup: getCleanupConfig(),
     proxy: getProxyDisplay(),
   });
@@ -504,9 +518,11 @@ app.post('/api/cleanup', async (_req, res) => {
 });
 
 function enrichResult(result) {
+  const isImages = result.contentType === 'images' || result.meta?.contentType === 'images';
   return {
     ...result,
-    videoUrl: `/output/${result.jobId}/source.mp4`,
+    contentType: isImages ? 'images' : result.contentType || 'video',
+    videoUrl: isImages ? null : `/output/${result.jobId}/source.mp4`,
     framesUrlPrefix: `/output/${result.jobId}/frames/`,
     resultUrl: `/output/${result.jobId}/result.json`,
   };

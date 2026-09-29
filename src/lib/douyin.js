@@ -390,20 +390,18 @@ function parseEmbeddedJson(html) {
   return null;
 }
 
-async function fetchSharePage(awemeId, { preferNote = false } = {}) {
+async function fetchSharePage(awemeId, { preferNote = false, onProgress } = {}) {
+  // 只打最可能有数据的 2 个地址，并行竞速（旧逻辑 4 个串行太慢）
   const urls = preferNote
     ? [
         `https://www.iesdouyin.com/share/note/${awemeId}`,
         `https://www.douyin.com/note/${awemeId}`,
-        `https://www.iesdouyin.com/share/video/${awemeId}`,
-        `https://www.douyin.com/video/${awemeId}`,
       ]
     : [
         `https://www.iesdouyin.com/share/video/${awemeId}`,
         `https://www.douyin.com/video/${awemeId}`,
-        `https://www.iesdouyin.com/share/note/${awemeId}`,
-        `https://www.douyin.com/note/${awemeId}`,
       ];
+
   let cookie = '';
   try {
     cookie = await fetchTtwidCookie();
@@ -411,9 +409,14 @@ async function fetchSharePage(awemeId, { preferNote = false } = {}) {
     // ignore
   }
 
-  for (const url of urls) {
+  onProgress?.(`HTTP 分享页并行探测（${urls.length}）…`);
+
+  const tryOne = async (url) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 7_000);
     try {
       const res = await fetch(url, {
+        signal: ctrl.signal,
         headers: {
           ...DEFAULT_HEADERS,
           'User-Agent': url.includes('iesdouyin') ? MOBILE_UA : DESKTOP_UA,
@@ -421,15 +424,16 @@ async function fetchSharePage(awemeId, { preferNote = false } = {}) {
           ...(cookie ? { Cookie: cookie } : {}),
         },
       });
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const html = await res.text();
       const data = parseEmbeddedJson(html);
       if (data) {
         const meta = digVideoMeta(data);
-        if (meta) return meta;
+        if (meta?.videoUrl || meta?.videoUri || meta?.images?.length) {
+          meta.via = meta.via || 'share-html';
+          return meta;
+        }
       }
-
-      // 兜底：直接从 HTML 里抠 mp4
       const mp4 = html.match(/https?:\/\/[^"'\\\s]+\.mp4[^"'\\\s]*/i)?.[0];
       if (mp4) {
         return {
@@ -440,13 +444,20 @@ async function fetchSharePage(awemeId, { preferNote = false } = {}) {
           videoUri: null,
           videoUrl: mp4.replace(/playwm/g, 'play'),
           cover: null,
+          images: [],
+          via: 'share-html-mp4',
         };
       }
+      return null;
     } catch {
-      // try next
+      return null;
+    } finally {
+      clearTimeout(timer);
     }
-  }
-  return null;
+  };
+
+  const results = await Promise.all(urls.map(tryOne));
+  return results.find((m) => m?.videoUrl || m?.videoUri || m?.images?.length) || null;
 }
 
 /**
@@ -530,32 +541,50 @@ export async function resolveDouyinLight(inputUrl) {
   };
 }
 
+/** @type {{ value: string, at: number } | null} */
+let ttwidCache = null;
+
 /** 尝试拿到 Cookie：优先本机已保存的登录 Cookie，其次纯 HTTP 拿 ttwid */
 async function fetchTtwidCookie() {
+  if (ttwidCache && Date.now() - ttwidCache.at < 90_000) {
+    return ttwidCache.value;
+  }
   try {
     const { loadCookieHeader } = await import('./cookies.js');
     const saved = await loadCookieHeader();
-    if (saved) return saved;
+    if (saved) {
+      ttwidCache = { value: saved, at: Date.now() };
+      return saved;
+    }
   } catch {
     // ignore
   }
   try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5_000);
     const res = await fetch('https://www.douyin.com/', {
       method: 'GET',
       redirect: 'manual',
+      signal: ctrl.signal,
       headers: {
         'User-Agent': DESKTOP_UA,
         Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'zh-CN,zh;q=0.9',
       },
     });
+    clearTimeout(timer);
     const raw = res.headers.getSetCookie?.() || [];
     const joined = Array.isArray(raw) ? raw.join(';') : String(res.headers.get('set-cookie') || '');
     const m = joined.match(/ttwid=([^;,\s]+)/i);
-    if (m?.[1]) return `ttwid=${m[1]}`;
+    if (m?.[1]) {
+      const v = `ttwid=${m[1]}`;
+      ttwidCache = { value: v, at: Date.now() };
+      return v;
+    }
   } catch {
     // ignore
   }
+  ttwidCache = { value: '', at: Date.now() };
   return '';
 }
 
@@ -595,18 +624,54 @@ async function fetchWebDetail(awemeId) {
 
 /**
  * 解析抖音链接（本机，一般不必登录）：
- * 1) 分享页 HTML / Web API
- * 2) yt-dlp（若可用）
- * 3) 无头 Edge/Chrome 打开作品页拦直链（与第一版相同，访客即可）
+ * 1) HTTP 分享页 / Web API（并行）
+ * 2) 无头 Edge/Chrome（图文优先；视频在 HTTP 失败后）
+ * 3) yt-dlp（已安装时短超时，不在解析时自动下载）
+ *
+ * @param {string} inputUrl
+ * @param {{ useBrowser?: boolean, onProgress?: (msg:string)=>void }} [opts]
  */
-export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
+export async function resolveDouyinVideo(inputUrl, { useBrowser = true, onProgress } = {}) {
+  const tip = (msg) => onProgress?.(msg);
+
+  tip('规范化链接…');
   let url = await normalizeDouyinInput(inputUrl);
   const awemeId = extractAwemeId(url);
   const preferNote = looksLikeNoteInput(url) || looksLikeNoteInput(inputUrl);
+  tip(`作品 ID ${awemeId}${preferNote ? '（图文）' : ''}`);
+
+  /** @type {Promise<any>|null} */
+  let browserPromise = null;
+  const startBrowser = () => {
+    if (!useBrowser || browserPromise) return browserPromise;
+    tip('启动本机浏览器解析…');
+    browserPromise = import('./browserResolve.js')
+      .then(({ resolveViaBrowser }) =>
+        resolveViaBrowser(url, {
+          preferNote,
+          timeoutMs: preferNote ? 35_000 : 45_000,
+          onProgress: tip,
+        }),
+      )
+      .catch((err) => {
+        const message = err?.message || String(err);
+        tip(`浏览器解析失败：${message}`);
+        return { __error: message };
+      });
+    return browserPromise;
+  };
+
+  tip('HTTP 并行解析（分享页 + 详情接口）…');
+  const [shareMeta, detailMeta] = await Promise.all([
+    fetchSharePage(awemeId, { preferNote, onProgress: tip }),
+    fetchWebDetail(awemeId),
+  ]);
 
   let meta =
-    (await fetchSharePage(awemeId, { preferNote })) ||
-    (await fetchWebDetail(awemeId)) || {
+    (shareMeta?.videoUrl || shareMeta?.images?.length ? shareMeta : null) ||
+    (detailMeta?.videoUrl || detailMeta?.images?.length ? detailMeta : null) ||
+    shareMeta ||
+    detailMeta || {
       awemeId,
       desc: '',
       author: '',
@@ -621,52 +686,75 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
   if (!Array.isArray(meta.images)) meta.images = [];
 
   if (meta.videoUri && !meta.videoUrl) {
+    tip('通过 video_id 换直链…');
     const play = await resolvePlayUrlByUri(meta.videoUri);
-    if (play) meta.videoUrl = play;
+    if (play) {
+      meta.videoUrl = play;
+      tip('已拿到播放直链');
+    }
   }
 
-  // 图文：优先走浏览器抓页面图片（HTTP 分享页常无内嵌数据）
+  if (meta.videoUrl || meta.images?.length) {
+    tip(
+      meta.images?.length
+        ? `HTTP 已拿到图文 ${meta.images.length} 张（${meta.via || 'http'}）`
+        : `HTTP 已拿到视频直链（${meta.via || 'http'}）`,
+    );
+  } else {
+    tip('HTTP 未拿到媒体，改用浏览器…');
+  }
+
   const needBrowser =
     useBrowser &&
     ((!meta.videoUrl && !meta.videoBuffer && !meta.images?.length) ||
       (preferNote && !meta.images?.length));
 
   if (needBrowser) {
-    try {
-      const { resolveViaBrowser } = await import('./browserResolve.js');
-      const browserMeta = await resolveViaBrowser(url, { preferNote });
+    const browserMeta = await startBrowser();
+    if (browserMeta && !browserMeta.__error) {
       meta = {
         ...meta,
         ...browserMeta,
         images: browserMeta.images?.length ? browserMeta.images : meta.images,
         via: browserMeta.via || 'browser',
       };
-    } catch (err) {
-      meta.browserHint = err?.message || String(err);
+      tip(
+        browserMeta.images?.length
+          ? `浏览器已拿到图文 ${browserMeta.images.length} 张`
+          : '浏览器已拿到视频地址',
+      );
+    } else if (browserMeta?.__error) {
+      meta.browserHint = browserMeta.__error;
     }
   }
 
-  // yt-dlp 放在浏览器之后：图文不要用它（常只会下到配乐）
+  // yt-dlp：仅本机已安装时短超时尝试；解析阶段不自动下载（避免卡 20MB）
   if (!meta.videoUrl && !meta.videoBuffer && !meta.images?.length && !preferNote) {
+    tip('尝试 yt-dlp（若已安装）…');
     try {
-      const { resolveViaYtDlp } = await import('./ytDlp.js');
-      const y = await resolveViaYtDlp(url, { autoInstall: true, timeoutMs: 45_000 });
-      if (y?.videoUrl) {
-        meta.videoUrl = y.videoUrl;
-        meta.via = 'yt-dlp';
-        if (y.title) meta.desc = meta.desc || y.title;
-        if (y.uploader) meta.author = meta.author || y.uploader;
-      } else if (y?.errorHint) {
-        meta.ytDlpHint = y.errorHint;
+      const { resolveViaYtDlp, findYtDlp } = await import('./ytDlp.js');
+      if (!findYtDlp()) {
+        tip('未安装 yt-dlp，跳过');
+      } else {
+        const y = await resolveViaYtDlp(url, { autoInstall: false, timeoutMs: 20_000 });
+        if (y?.videoUrl) {
+          meta.videoUrl = y.videoUrl;
+          meta.via = 'yt-dlp';
+          if (y.title) meta.desc = meta.desc || y.title;
+          if (y.uploader) meta.author = meta.author || y.uploader;
+          tip('yt-dlp 已拿到直链');
+        } else if (y?.errorHint) {
+          meta.ytDlpHint = y.errorHint;
+          tip(`yt-dlp 未成功：${y.errorHint}`);
+        }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      tip(`yt-dlp 异常：${err?.message || err}`);
     }
   }
 
   const hasImages = Array.isArray(meta.images) && meta.images.length > 0;
 
-  // 图文优先：有图片时丢掉误抓的配乐/空壳「视频」地址
   if (hasImages && (preferNote || !meta.videoUrl || isLikelyAudioUrl(meta.videoUrl))) {
     meta.videoUrl = null;
     meta.videoUri = null;
@@ -682,15 +770,18 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
     );
   }
 
-  const pageUrl = preferNote || (hasImages && !meta.videoUrl)
-    ? `https://www.douyin.com/note/${meta.awemeId}`
-    : `https://www.douyin.com/video/${meta.awemeId}`;
+  const pageUrl =
+    preferNote || (hasImages && !meta.videoUrl)
+      ? `https://www.douyin.com/note/${meta.awemeId}`
+      : `https://www.douyin.com/video/${meta.awemeId}`;
 
+  tip(`解析完成（via=${meta.via || 'http'}）`);
   return {
     ...meta,
     sourceUrl: url,
     pageUrl,
-    contentType: hasImages && !meta.videoUrl && !meta.videoBuffer ? 'images' : meta.contentType || 'video',
+    contentType:
+      hasImages && !meta.videoUrl && !meta.videoBuffer ? 'images' : meta.contentType || 'video',
     via: meta.via || 'http',
   };
 }

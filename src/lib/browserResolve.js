@@ -14,8 +14,9 @@ import { loadCookieHeader } from './cookies.js';
  */
 export async function resolveViaBrowser(
   inputUrl,
-  { timeoutMs = 60_000, preferNote = false } = {},
+  { timeoutMs = 45_000, preferNote = false, onProgress } = {},
 ) {
+  const tip = (msg) => onProgress?.(msg);
   const normalized = await normalizeDouyinInput(inputUrl);
   const awemeId = extractAwemeId(normalized);
   const isNote =
@@ -33,12 +34,14 @@ export async function resolveViaBrowser(
       '--disable-gpu',
     ],
   };
+  tip('启动 Edge/Chrome…');
   let browser;
   for (const channel of ['msedge', 'chrome', null]) {
     try {
       browser = await chromium.launch(
         channel ? { ...launchOpts, channel } : launchOpts,
       );
+      tip(channel ? `已用 ${channel}` : '已用 Playwright Chromium');
       break;
     } catch {
       // try next
@@ -66,7 +69,7 @@ export async function resolveViaBrowser(
     const context = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      viewport: { width: 1440, height: 900 },
+      viewport: { width: 1280, height: 800 },
       locale: 'zh-CN',
       extraHTTPHeaders: {
         'Accept-Language': 'zh-CN,zh;q=0.9',
@@ -78,20 +81,21 @@ export async function resolveViaBrowser(
     });
 
     const cookieHeader = await loadCookieHeader();
-    const parsedCookies = cookieHeaderToPlaywright(cookieHeader);
+    let parsedCookies = cookieHeaderToPlaywright(cookieHeader);
+    if (!parsedCookies.length) {
+      tip('获取访客 ttwid…');
+      const ttwid = await fetchGuestTtwid();
+      if (ttwid) {
+        parsedCookies = cookieHeaderToPlaywright(`ttwid=${ttwid}`);
+      }
+    }
     if (parsedCookies.length) {
       await context.addCookies(parsedCookies).catch(() => {});
+      tip(`已注入 Cookie`);
     }
 
     const page = await context.newPage();
-
-    await page
-      .goto('https://www.douyin.com/', {
-        waitUntil: 'domcontentloaded',
-        timeout: Math.min(timeoutMs, 25_000),
-      })
-      .catch(() => {});
-    await page.waitForTimeout(800).catch(() => {});
+    // 已有 Cookie 时不再暖场首页，直接进作品页
 
     page.on('response', async (response) => {
       try {
@@ -103,6 +107,8 @@ export async function resolveViaBrowser(
           const item = data?.aweme_detail || null;
           if (item && String(item.aweme_id) === String(awemeId)) {
             applyItem(found, item, awemeId);
+            if (found.images?.length) tip(`拦截到详情：图文 ${found.images.length} 张`);
+            else if (found.videoUrl) tip('拦截到详情：视频直链');
           }
           return;
         }
@@ -112,6 +118,7 @@ export async function resolveViaBrowser(
           pushCandidate(found, clean);
           if (!found.videoUrl || /__vid=/.test(clean)) {
             found.videoUrl = clean;
+            tip('拦截到媒体直链');
           }
         }
       } catch {
@@ -119,20 +126,36 @@ export async function resolveViaBrowser(
       }
     });
 
+    tip(`打开作品页…`);
     await page.goto(pageUrl, {
       waitUntil: 'domcontentloaded',
-      timeout: timeoutMs,
+      timeout: Math.min(timeoutMs, 25_000),
     });
 
     if (isNote) {
-      await page
-        .waitForSelector('img[src*="aweme_images"], img[src*="tplv-dy-aweme-images"]', {
-          timeout: 20_000,
-        })
-        .catch(() => {});
-      await page.waitForTimeout(1500).catch(() => {});
+      tip('等待图文图片出现…');
+      const deadline = Date.now() + 12_000;
+      let lastCount = 0;
+      let stableRounds = 0;
+      while (Date.now() < deadline) {
+        const scraped = await page.evaluate(scrapeNoteImagesFromDom).catch(() => null);
+        mergeImages(found, scraped?.images || []);
+        if (scraped?.desc && !found.desc) found.desc = scraped.desc;
+        const n = found.images.length;
+        if (n > lastCount) {
+          tip(`已发现图文 ${n} 张…`);
+          lastCount = n;
+          stableRounds = 0;
+        } else if (n > 0) {
+          stableRounds += 1;
+          // 连续约 0.75s 数量不再增加，认为加载完毕
+          if (stableRounds >= 3) break;
+        }
+        await page.waitForTimeout(250).catch(() => {});
+      }
     } else {
-      await page.waitForSelector('video', { timeout: 20_000 }).catch(() => {});
+      tip('等待视频元素 / 直链…');
+      await page.waitForSelector('video', { timeout: 12_000 }).catch(() => {});
       await page.evaluate(() => {
         try {
           const v = document.querySelector('video');
@@ -144,10 +167,14 @@ export async function resolveViaBrowser(
           // ignore
         }
       });
-      await page.waitForTimeout(2500).catch(() => {});
+      // 短轮询：有直链或详情即可离开，最多约 4s
+      const deadline = Date.now() + 4_000;
+      while (Date.now() < deadline && !found.videoUrl && !found.candidates.length) {
+        await page.waitForTimeout(200).catch(() => {});
+      }
     }
 
-    // DOM 兜底：图文页常不走 detail JSON
+    // DOM 兜底再扫一次
     const scraped = await page.evaluate(scrapeNoteImagesFromDom).catch(() => ({
       images: [],
       desc: '',
@@ -157,28 +184,23 @@ export async function resolveViaBrowser(
     if (scraped?.author && !found.author) found.author = scraped.author;
     mergeImages(found, scraped?.images || []);
 
-    if (!found.images.length && !found.videoUrl) {
-      // 若打开的是 video 页但实际是图文，再试 note 页
-      if (!isNote) {
-        await page.goto(`https://www.douyin.com/note/${awemeId}`, {
+    if (!found.images.length && !found.videoUrl && !isNote) {
+      tip('视频页无直链，尝试 note 页…');
+      await page
+        .goto(`https://www.douyin.com/note/${awemeId}`, {
           waitUntil: 'domcontentloaded',
-          timeout: Math.min(timeoutMs, 30_000),
-        }).catch(() => {});
-        await page
-          .waitForSelector('img[src*="aweme_images"], img[src*="tplv-dy-aweme-images"]', {
-            timeout: 12_000,
-          })
-          .catch(() => {});
-        await page.waitForTimeout(1200).catch(() => {});
-        const again = await page.evaluate(scrapeNoteImagesFromDom).catch(() => null);
-        mergeImages(found, again?.images || []);
-        if (again?.desc && !found.desc) found.desc = again.desc;
-        if (again?.author && !found.author) found.author = again.author;
-      }
+          timeout: Math.min(timeoutMs, 15_000),
+        })
+        .catch(() => {});
+      const again = await page.evaluate(scrapeNoteImagesFromDom).catch(() => null);
+      mergeImages(found, again?.images || []);
+      if (again?.desc && !found.desc) found.desc = again.desc;
+      if (again?.author && !found.author) found.author = again.author;
     }
 
     // 图文：只要拿到图片就直接返回，勿把背景音乐当成视频下载
     if (found.images.length && (isNote || !found.videoUrl || !looksLikeVideoMediaUrl(found.videoUrl))) {
+      tip(`图文就绪：${found.images.length} 张`);
       found.contentType = 'images';
       return {
         awemeId,
@@ -200,7 +222,6 @@ export async function resolveViaBrowser(
       found.videoUrl = pickPreferredUrl(found.candidates, awemeId);
     }
 
-    // 候选里可能混入图文配乐（mp3），丢掉非视频地址
     if (found.videoUrl && !looksLikeVideoMediaUrl(found.videoUrl)) {
       found.videoUrl = found.candidates.find((u) => looksLikeVideoMediaUrl(u)) || null;
     }
@@ -214,8 +235,8 @@ export async function resolveViaBrowser(
       );
     }
 
-    // 仅图文
     if (!found.videoUrl && found.images.length) {
+      tip(`图文就绪：${found.images.length} 张`);
       return {
         awemeId,
         desc: found.desc,
@@ -243,6 +264,30 @@ export async function resolveViaBrowser(
       found.videoUrl,
       ...rankCandidates(found.candidates, awemeId),
     ]);
+
+    // CDN 直链交给流水线下载，避免浏览器阶段整包缓冲拖慢「解析」
+    const preferred = tryUrls.find(
+      (u) => looksLikeVideoMediaUrl(u) && isCdnVideoUrl(u) && !isSnssdkPlayUrl(u),
+    );
+    if (preferred) {
+      tip('已拿到 CDN 直链（交由下载阶段拉取）');
+      return {
+        awemeId,
+        desc: found.desc,
+        author: found.author,
+        duration: null,
+        videoUri: found.videoUri,
+        videoUrl: String(preferred).replace(/playwm/g, 'play'),
+        cover: found.cover,
+        images: found.images,
+        contentType: found.images.length ? 'mixed' : 'video',
+        sourceUrl: inputUrl,
+        pageUrl,
+        via: 'browser',
+      };
+    }
+
+    tip('直链需浏览器会话下载，尝试拉取…');
     let buffer;
     let lastErr;
     for (const u of tryUrls) {
@@ -250,6 +295,7 @@ export async function resolveViaBrowser(
         buffer = await downloadWithContext(context, u);
         found.videoUrl = u;
         lastErr = null;
+        tip('浏览器会话下载成功');
         break;
       } catch (err) {
         lastErr = err;
@@ -391,6 +437,30 @@ function cookieHeaderToPlaywright(header) {
     }
   }
   return out;
+}
+
+async function fetchGuestTtwid() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4_000);
+    const res = await fetch('https://www.douyin.com/', {
+      method: 'GET',
+      redirect: 'manual',
+      signal: ctrl.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Accept: 'text/html',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      },
+    });
+    clearTimeout(timer);
+    const raw = res.headers.getSetCookie?.() || [];
+    const joined = Array.isArray(raw) ? raw.join(';') : String(res.headers.get('set-cookie') || '');
+    return joined.match(/ttwid=([^;,\s]+)/i)?.[1] || '';
+  } catch {
+    return '';
+  }
 }
 
 function isLikelyMediaUrl(url, ct) {

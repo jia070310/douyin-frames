@@ -47,6 +47,29 @@ const IS_PROD = process.env.NODE_ENV === 'production';
 /** @type {Map<string, object>} */
 const jobs = new Map();
 
+function patchJob(jobId, evt) {
+  const prev = jobs.get(jobId) || {};
+  const log = Array.isArray(prev.log) ? [...prev.log] : [];
+  if (evt?.message) {
+    const line = {
+      t: Date.now(),
+      stage: evt.stage || prev.stage || '',
+      message: String(evt.message),
+    };
+    const last = log[log.length - 1];
+    if (!last || last.message !== line.message || last.stage !== line.stage) {
+      log.push(line);
+    }
+    if (log.length > 60) log.splice(0, log.length - 60);
+  }
+  jobs.set(jobId, {
+    ...prev,
+    ...evt,
+    log,
+    updatedAt: Date.now(),
+  });
+}
+
 const app = express();
 if (IS_PROD) {
   app.set('trust proxy', 1);
@@ -300,23 +323,21 @@ app.post(
       format: jobMeta.format || 'jpg',
       quality: jobMeta.quality ?? 2,
       onEvent: (evt) => {
-        jobs.set(jobId, { ...jobs.get(jobId), ...evt, updatedAt: Date.now() });
+        patchJob(jobId, evt);
       },
     })
       .then((result) => {
-        jobs.set(jobId, {
+        patchJob(jobId, {
           stage: 'done',
           message: '完成',
           result: enrichResult(result),
-          updatedAt: Date.now(),
         });
       })
       .catch((err) => {
         console.error(err);
-        jobs.set(jobId, {
+        patchJob(jobId, {
           stage: 'error',
           message: err.message || String(err),
-          updatedAt: Date.now(),
         });
       });
   },
@@ -407,23 +428,21 @@ app.post('/api/jobs', async (req, res) => {
     format: format || 'jpg',
     quality: quality ?? 2,
     onEvent: (evt) => {
-      jobs.set(jobId, { ...jobs.get(jobId), ...evt, updatedAt: Date.now() });
+      patchJob(jobId, evt);
     },
   })
     .then((result) => {
-      jobs.set(jobId, {
+      patchJob(jobId, {
         stage: 'done',
         message: '完成',
         result: enrichResult(result),
-        updatedAt: Date.now(),
       });
     })
     .catch((err) => {
       console.error(err);
-      jobs.set(jobId, {
+      patchJob(jobId, {
         stage: 'error',
         message: err.message || String(err),
-        updatedAt: Date.now(),
       });
     });
 });

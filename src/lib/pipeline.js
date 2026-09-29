@@ -84,7 +84,11 @@ export async function runExtractJob(options) {
     await downloadVideo(videoUrl, videoPath);
   } else if (allowUrlResolve && url) {
     emit('resolve', '本机正在解析抖音作品…');
-    meta = await resolveDouyinVideo(url);
+    const t0 = Date.now();
+    meta = await resolveDouyinVideo(url, {
+      onProgress: (msg) => emit('resolve', msg),
+    });
+    emit('resolve', `解析完成，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s（${meta.via || 'http'}）`);
 
     // 图文 note：直接下载图片，跳过 FFmpeg（勿把配乐当视频）
     const preferImages =

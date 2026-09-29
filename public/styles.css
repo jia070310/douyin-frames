@@ -762,6 +762,34 @@ button#submit:disabled {
   white-space: pre-wrap;
 }
 
+.status-log-wrap {
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 8px;
+}
+
+.status-log-head {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.status-log {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #c8d0dc;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .result-head {
   display: grid;
   gap: 8px;

@@ -8,6 +8,8 @@ const intervalField = document.getElementById('intervalField');
 const submitBtn = document.getElementById('submit');
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('statusText');
+const statusLogWrap = document.getElementById('statusLogWrap');
+const statusLogEl = document.getElementById('statusLog');
 const resultEl = document.getElementById('result');
 const metaEl = document.getElementById('meta');
 const videoLink = document.getElementById('videoLink');
@@ -216,6 +218,8 @@ function setStatusRunning() {
   statusEl.hidden = false;
   statusEl.classList.remove('is-done', 'is-error');
   if (emptyState) emptyState.hidden = true;
+  if (statusLogEl) statusLogEl.textContent = '';
+  if (statusLogWrap) statusLogWrap.hidden = true;
 }
 
 function setStatusDone(message) {
@@ -224,6 +228,7 @@ function setStatusDone(message) {
   statusEl.classList.add('is-done');
   statusText.textContent = message;
   statusText.classList.remove('error');
+  if (statusLogWrap) statusLogWrap.hidden = true;
   if (emptyState) emptyState.hidden = true;
 }
 
@@ -234,6 +239,22 @@ function setStatusError(message) {
   statusText.textContent = message;
   statusText.classList.add('error');
   if (emptyState) emptyState.hidden = true;
+}
+
+function renderStatusLog(log) {
+  if (!statusLogEl || !statusLogWrap) return;
+  if (!Array.isArray(log) || !log.length) {
+    statusLogWrap.hidden = true;
+    return;
+  }
+  statusLogWrap.hidden = false;
+  const lines = log.map((item) => {
+    const ts = item.t ? new Date(item.t).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    const stage = item.stage ? `[${item.stage}] ` : '';
+    return `${ts}  ${stage}${item.message || ''}`;
+  });
+  statusLogEl.textContent = lines.join('\n');
+  statusLogEl.scrollTop = statusLogEl.scrollHeight;
 }
 
 /** 用深色自定义菜单替换原生 select，避免 Windows 白底浅字 */
@@ -588,7 +609,6 @@ async function pollJob(jobId) {
   };
 
   for (;;) {
-    await sleep(800);
     const res = await fetch(`${remoteBase}/api/jobs/${jobId}`);
     const data = await res.json().catch(() => ({}));
     if (res.status === 404) {
@@ -598,9 +618,17 @@ async function pollJob(jobId) {
     if (!res.ok) throw new Error(data.error || '查询失败');
 
     statusText.textContent = data.message || labels[data.stage] || data.stage;
+    if (data.stage === 'done' || data.stage === 'error') {
+      if (statusLogWrap) statusLogWrap.hidden = true;
+    } else {
+      renderStatusLog(data.log);
+    }
 
     if (data.stage === 'done') return data.result;
     if (data.stage === 'error') throw new Error(data.message || '任务失败');
+
+    // 解析阶段更勤轮询，便于动态显示详情
+    await sleep(data.stage === 'resolve' ? 350 : 700);
   }
 }
 

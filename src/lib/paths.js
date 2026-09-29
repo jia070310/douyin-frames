@@ -3,9 +3,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const ROOT = path.resolve(__dirname, '../..');
-export const OUTPUT_ROOT = path.join(ROOT, 'output');
-export const UPLOADS_ROOT = path.join(ROOT, 'uploads');
+
+/** 源码根目录；打包后可由 DOUYIN_FRAMES_ROOT 覆盖 */
+export const ROOT = process.env.DOUYIN_FRAMES_ROOT
+  ? path.resolve(process.env.DOUYIN_FRAMES_ROOT)
+  : path.resolve(__dirname, '../..');
+
+/** 输出目录；桌面端建议指到 userData/output */
+export const OUTPUT_ROOT = process.env.DOUYIN_FRAMES_OUTPUT
+  ? path.resolve(process.env.DOUYIN_FRAMES_OUTPUT)
+  : path.join(ROOT, 'output');
+
+export const UPLOADS_ROOT = process.env.DOUYIN_FRAMES_UPLOADS
+  ? path.resolve(process.env.DOUYIN_FRAMES_UPLOADS)
+  : path.join(ROOT, 'uploads');
 
 export function jobDir(jobId) {
   return path.join(OUTPUT_ROOT, jobId);

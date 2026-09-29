@@ -2,6 +2,14 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+function ffmpegBin() {
+  return process.env.FFMPEG_PATH || 'ffmpeg';
+}
+
+function ffprobeBin() {
+  return process.env.FFPROBE_PATH || 'ffprobe';
+}
+
 function run(cmd, args, { onLog } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { windowsHide: true });
@@ -18,7 +26,7 @@ function run(cmd, args, { onLog } = {}) {
       if (err.code === 'ENOENT') {
         reject(
           new Error(
-            `未找到 ${cmd}，请先安装 FFmpeg 并将其加入 PATH：https://ffmpeg.org/download.html`,
+            `未找到 ${cmd}。桌面版会自动检测/下载 FFmpeg；CLI 请安装并加入 PATH：https://ffmpeg.org/download.html`,
           ),
         );
       } else {
@@ -65,7 +73,8 @@ export async function extractFrames({
   const args = ['-y', '-hwaccel', 'auto', '-i', videoPath];
 
   if (mode === 'every') {
-    args.push('-fps_mode', 'passthrough');
+    // 用 -vsync 0（passthrough）兼容旧版 FFmpeg；-fps_mode 需较新版本
+    args.push('-vsync', '0');
   } else if (mode === 'fps') {
     args.push('-vf', `fps=${Math.max(0.1, Number(fps) || 1)}`);
   } else if (mode === 'seconds') {
@@ -91,7 +100,7 @@ export async function extractFrames({
 
   // 用 progress 管道粗略估计进度：重新跑一遍带 -progress
   // 简化：直接执行，完成后统计文件数
-  await run('ffmpeg', args, { onLog });
+  await run(ffmpegBin(), args, { onLog });
 
   const files = (await fs.readdir(outDir))
     .filter((f) => f.startsWith('frame_') && f.endsWith(`.${ext}`))
@@ -119,12 +128,16 @@ export async function probeVideo(videoPath) {
   ];
 
   const { stdout } = await new Promise((resolve, reject) => {
-    const child = spawn('ffprobe', args, { windowsHide: true });
+    const child = spawn(ffprobeBin(), args, { windowsHide: true });
     let out = '';
     let err = '';
     child.stdout.on('data', (b) => (out += b.toString()));
     child.stderr.on('data', (b) => (err += b.toString()));
-    child.on('error', reject);
+    child.on('error', (e) => {
+      if (e.code === 'ENOENT') {
+        reject(new Error(`未找到 ${ffprobeBin()}，请安装 FFmpeg / ffprobe`));
+      } else reject(e);
+    });
     child.on('close', (code) => {
       if (code === 0) resolve({ stdout: out });
       else reject(new Error(err || `ffprobe 失败 ${code}`));

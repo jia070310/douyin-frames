@@ -1,0 +1,21 @@
+[package]
+name = "douyin-frames-launcher"
+version = "1.1.0"
+edition = "2021"
+description = "Frameless WebView2 launcher for Douyin Frames portable pack"
+
+[[bin]]
+name = "DouyinFrames"
+path = "src/main.rs"
+
+[dependencies]
+tao = "0.30"
+wry = "0.48"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true

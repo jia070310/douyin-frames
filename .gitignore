@@ -1,6 +1,7 @@
 node_modules/
 output/
 uploads/
+dist/
 .tmp/
 .env
 .env.*
@@ -10,3 +11,13 @@ uploads/
 Thumbs.db
 playwright-report/
 test-results/
+tools/yt-dlp/
+tools/node/
+src-tauri/target/
+dist/
+
+# local / agent
+.cursor/
+.task-instructions.md
+.task-utf8.md
+packaging/launcher/WebView2Loader.dll

@@ -1,20 +1,37 @@
 import { randomBytes } from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
+import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { runExtractJob } from './lib/pipeline.js';
 import { OUTPUT_ROOT, jobDir, ensureDir } from './lib/paths.js';
-import { cleanupOutput, getCleanupConfig, startCleanupScheduler, releaseJob, releaseJobs } from './lib/cleanup.js';
+import { getCleanupConfig, startCleanupScheduler, releaseJob, releaseJobs, purgeCache } from './lib/cleanup.js';
 import { initProxy, getProxyDisplay } from './lib/proxy.js';
+import { extractAwemeId, extractDouyinUrl, normalizeDouyinInput, resolveDouyinLight } from './lib/douyin.js';
+import { ensureFfmpeg } from './lib/deps.js';
+import { hydrateCookieEnv, loadCookieHeader, saveCookieHeader, cookieNetscapePath } from './lib/cookies.js';
 
 await initProxy();
+await hydrateCookieEnv();
+
+// 启动时挂上精简 FFmpeg（PATH / npm 包 / 本机缓存）
+try {
+  const dataDir = path.join(
+    process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+    'DouyinFrames',
+    'runtime',
+  );
+  await ensureFfmpeg({ dataDir, onProgress: (msg) => console.log(`[ffmpeg] ${msg}`) });
+} catch (err) {
+  console.warn('[ffmpeg] 未就绪:', err?.message || err);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, '..');
-const PORT = Number(process.env.PORT) || 3780;
-const HOST = process.env.HOST || '0.0.0.0';
+const ROOT = process.env.DOUYIN_FRAMES_ROOT
+  ? path.resolve(process.env.DOUYIN_FRAMES_ROOT)
+  : path.resolve(__dirname, '..');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 /** @type {Map<string, object>} */
@@ -50,24 +67,262 @@ app.use('/output', express.static(OUTPUT_ROOT));
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
+    name: 'Douyin Frames',
+    version: '1.1.0',
     cleanup: getCleanupConfig(),
     proxy: getProxyDisplay(),
   });
 });
+
+app.get('/api/cookies', async (_req, res) => {
+  const header = await loadCookieHeader();
+  res.json({
+    hasCookie: Boolean(header),
+    length: header.length,
+    netscapePath: cookieNetscapePath(),
+    hint: '在 Edge 打开过 douyin.com（访客即可）→ F12 → Network → 复制 Request Headers 里的 Cookie',
+  });
+});
+
+app.post('/api/cookies', async (req, res) => {
+  try {
+    const raw = String(req.body?.cookie || req.body?.header || '');
+    const result = await saveCookieHeader(raw);
+    res.json({
+      ok: true,
+      ...result,
+      hasCookie: result.saved,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err?.message || String(err) });
+  }
+});
+
+app.delete('/api/cookies', async (_req, res) => {
+  try {
+    await saveCookieHeader('');
+    delete process.env.DOUYIN_COOKIES;
+    if (process.env.YT_DLP_COOKIES?.includes('DouyinFrames')) {
+      delete process.env.YT_DLP_COOKIES;
+    }
+    res.json({ ok: true, hasCookie: false });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+/**
+ * 仅规范化短链 / 提取 awemeId
+ * 供浏览器端解析流程使用
+ */
+app.post('/api/normalize', async (req, res) => {
+  const input = String(req.body?.url || '').trim();
+  if (!input) return res.status(400).json({ error: '缺少 url' });
+  try {
+    const extracted = extractDouyinUrl(input);
+    let url = extracted;
+    try {
+      url = await normalizeDouyinInput(input);
+    } catch {
+      url = extracted;
+    }
+    let awemeId = null;
+    try {
+      awemeId = extractAwemeId(url);
+    } catch {
+      try {
+        awemeId = extractAwemeId(input);
+      } catch {
+        awemeId = null;
+      }
+    }
+    res.json({
+      url,
+      awemeId,
+      pageUrl: awemeId ? `https://www.douyin.com/video/${awemeId}` : url,
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message || String(err) });
+  }
+});
+
+const ALLOWED_FETCH_HOSTS = new Set([
+  'v.douyin.com',
+  'www.douyin.com',
+  'douyin.com',
+  'www.iesdouyin.com',
+  'iesdouyin.com',
+  'aweme.snssdk.com',
+  'www.snssdk.com',
+]);
+
+function assertAllowedFetchUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error('非法 URL');
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('仅支持 http/https');
+  }
+  const host = u.hostname.toLowerCase();
+  const ok =
+    ALLOWED_FETCH_HOSTS.has(host) ||
+    host.endsWith('.douyin.com') ||
+    host.endsWith('.iesdouyin.com') ||
+    host.endsWith('.snssdk.com') ||
+    host.endsWith('.byteicdn.com') ||
+    host.endsWith('.douyinvod.com');
+  if (!ok) throw new Error(`不允许代理该域名: ${host}`);
+  return u.href;
+}
+
+/**
+ * 同源拉页代理：浏览器因跨域无法直连抖音，由本站代拉 HTML，解析仍在浏览器完成。
+ * POST { url }
+ */
+app.post('/api/proxy-fetch', async (req, res) => {
+  const input = String(req.body?.url || '').trim();
+  if (!input) return res.status(400).json({ error: '缺少 url' });
+  try {
+    const target = assertAllowedFetchUrl(input);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    const upstream = await fetch(target, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        Referer: 'https://www.douyin.com/',
+      },
+    }).finally(() => clearTimeout(timer));
+
+    const text = await upstream.text();
+    res.json({
+      ok: upstream.ok,
+      status: upstream.status,
+      finalUrl: upstream.url || target,
+      text: text.length > 1_500_000 ? text.slice(0, 1_500_000) : text,
+    });
+  } catch (err) {
+    res.status(502).json({ error: err.message || String(err) });
+  }
+});
+
+/**
+ * 轻量解析（无 Playwright）：短链展开 + 分享页 HTML 抽取直链
+ * 浏览器解析失败时的同源兜底
+ */
+app.post('/api/resolve-light', async (req, res) => {
+  const input = String(req.body?.url || '').trim();
+  if (!input) return res.status(400).json({ error: '缺少 url' });
+  try {
+    const data = await resolveDouyinLight(input);
+    res.json(data);
+  } catch (err) {
+    res.status(422).json({ error: err.message || String(err) });
+  }
+});
+
+/**
+ * 本地视频文件上传后抽帧
+ * POST /api/jobs/with-video
+ * Content-Type: application/octet-stream
+ * X-Job-Meta: JSON 字符串（mode/fps/meta/sourceUrl 等）
+ * body: 视频二进制
+ */
+app.post(
+  '/api/jobs/with-video',
+  express.raw({ type: 'application/octet-stream', limit: '512mb' }),
+  async (req, res) => {
+    let jobMeta = {};
+    try {
+      jobMeta = JSON.parse(String(req.headers['x-job-meta'] || '{}'));
+    } catch {
+      return res.status(400).json({ error: 'X-Job-Meta 不是合法 JSON' });
+    }
+
+    const buf = req.body;
+    if (!Buffer.isBuffer(buf) || buf.length < 1024) {
+      return res.status(400).json({ error: '视频内容过小或缺失' });
+    }
+
+    const toRelease = [
+      ...(Array.isArray(jobMeta.releaseJobIds) ? jobMeta.releaseJobIds : []),
+      jobMeta.releaseJobId,
+    ].filter(Boolean);
+    if (toRelease.length) {
+      releaseJobs(toRelease, { reason: 'replaced_by_new_job', jobs }).catch(() => {});
+    }
+
+    const jobId = randomBytes(6).toString('hex');
+    const base = jobDir(jobId);
+    await ensureDir(base);
+    const videoPath = path.join(base, 'source.mp4');
+    await fsp.writeFile(videoPath, buf);
+
+    jobs.set(jobId, { stage: 'queued', message: '排队中', updatedAt: Date.now() });
+    res.status(202).json({
+      jobId,
+      statusUrl: `/api/jobs/${jobId}`,
+      cleanup: getCleanupConfig(),
+    });
+
+    runExtractJob({
+      localVideo: videoPath,
+      meta: {
+        ...(jobMeta.meta || {}),
+        sourceUrl: jobMeta.sourceUrl || jobMeta.meta?.sourceUrl || '',
+        via: jobMeta.meta?.via || 'local-upload',
+      },
+      jobId,
+      mode: jobMeta.mode || 'every',
+      fps: jobMeta.fps ?? 1,
+      interval: jobMeta.interval ?? 1,
+      format: jobMeta.format || 'jpg',
+      quality: jobMeta.quality ?? 2,
+      onEvent: (evt) => {
+        jobs.set(jobId, { ...jobs.get(jobId), ...evt, updatedAt: Date.now() });
+      },
+    })
+      .then((result) => {
+        jobs.set(jobId, {
+          stage: 'done',
+          message: '完成',
+          result: enrichResult(result),
+          updatedAt: Date.now(),
+        });
+      })
+      .catch((err) => {
+        console.error(err);
+        jobs.set(jobId, {
+          stage: 'error',
+          message: err.message || String(err),
+          updatedAt: Date.now(),
+        });
+      });
+  },
+);
 
 /**
  * 同步提取（适合短视频 / CLI 调试）
  * POST /api/extract
  */
 app.post('/api/extract', async (req, res) => {
-  const { url, mode, fps, interval, format, quality } = req.body || {};
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: '缺少 url 字段' });
+  const { url, videoUrl, meta, mode, fps, interval, format, quality } = req.body || {};
+  if ((!url || typeof url !== 'string') && (!videoUrl || typeof videoUrl !== 'string')) {
+    return res.status(400).json({ error: '缺少 url 或 videoUrl 字段' });
   }
 
   try {
     const result = await runExtractJob({
       url,
+      videoUrl,
+      meta,
       mode: mode || 'every',
       fps: fps ?? 1,
       interval: interval ?? 1,
@@ -83,14 +338,29 @@ app.post('/api/extract', async (req, res) => {
 });
 
 /**
- * 异步任务（网站部署推荐：先返回 jobId，再轮询）
+ * 异步任务（本机网页推荐：先返回 jobId，再轮询）
  * POST /api/jobs
  * GET  /api/jobs/:id
+ *
+ * body 支持：
+ * - { url } 本机解析抖音链接后下载抽帧
+ * - { videoUrl, meta } 已有直链，只下载+抽帧
  */
 app.post('/api/jobs', async (req, res) => {
-  const { url, mode, fps, interval, format, quality, releaseJobId, releaseJobIds } = req.body || {};
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: '缺少 url 字段' });
+  const {
+    url,
+    videoUrl,
+    meta,
+    mode,
+    fps,
+    interval,
+    format,
+    quality,
+    releaseJobId,
+    releaseJobIds,
+  } = req.body || {};
+  if ((!url || typeof url !== 'string') && (!videoUrl || typeof videoUrl !== 'string')) {
+    return res.status(400).json({ error: '缺少 url 或 videoUrl 字段' });
   }
 
   // 开新任务：把旧任务标记为延迟清理
@@ -114,6 +384,8 @@ app.post('/api/jobs', async (req, res) => {
 
   runExtractJob({
     url,
+    videoUrl,
+    meta,
     jobId,
     mode: mode || 'every',
     fps: fps ?? 1,
@@ -169,9 +441,25 @@ app.post('/api/jobs/:id/keep', async (req, res) => {
     res.status(400).json({ error: err.message || String(err) });
   }
 });
-app.get('/api/jobs/:id', (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: '任务不存在' });
+app.get('/api/jobs/:id', async (req, res) => {
+  let job = jobs.get(req.params.id);
+  if (!job) {
+    // 本机进程重启后内存任务会丢：若磁盘仍有 result.json 则恢复为已完成
+    try {
+      const raw = await fsp.readFile(path.join(jobDir(req.params.id), 'result.json'), 'utf8');
+      const parsed = JSON.parse(raw);
+      job = {
+        stage: 'done',
+        message: '完成',
+        result: enrichResult(parsed),
+        updatedAt: Date.now(),
+        revived: true,
+      };
+      jobs.set(req.params.id, job);
+    } catch {
+      return res.status(404).json({ error: '任务不存在' });
+    }
+  }
   res.json(job);
 });
 
@@ -198,10 +486,10 @@ app.get('/api/cleanup', (_req, res) => {
   res.json(getCleanupConfig());
 });
 
-/** 立即执行一次清理 */
+/** 立即清空本机抽帧缓存与上传临时文件 */
 app.post('/api/cleanup', async (_req, res) => {
   try {
-    const result = await cleanupOutput({ jobs });
+    const result = await purgeCache({ jobs });
     res.json({
       ok: true,
       removed: result.removed.length,
@@ -227,17 +515,48 @@ function enrichResult(result) {
 await ensureDir(OUTPUT_ROOT);
 startCleanupScheduler({ jobs });
 
-app.listen(PORT, HOST, () => {
-  console.log(`抖音逐帧工具: http://${HOST}:${PORT}`);
-  if (IS_PROD) {
-    console.log('生产模式：请用 Nginx/Caddy 反代到二级域名（勿对外暴露端口）');
+/**
+ * 启动本机 HTTP 服务（`npm start` / desktop / Tauri 共用）
+ * @param {{ port?: number, host?: string }} [opts]
+ */
+export async function startServer(opts = {}) {
+  // port=0 表示系统分配空闲端口；不能用 `|| 3780`（0 会被当成假值）
+  let port;
+  if (opts.port !== undefined && opts.port !== null && opts.port !== '') {
+    port = Number(opts.port);
+    if (!Number.isFinite(port) || port < 0) port = 3780;
+  } else if (process.env.PORT) {
+    port = Number(process.env.PORT) || 3780;
   } else {
-    console.log(`本地访问: http://localhost:${PORT}`);
+    port = 3780;
   }
-  const proxy = getProxyDisplay();
-  if (proxy) console.log(`抖音出口代理: ${proxy}`);
-  else if (IS_PROD) {
-    console.log('提示：机房 IP 易被抖音风控，建议配置 DOUYIN_PROXY（住宅/移动代理）');
+  // Electron / 本机：默认只听 127.0.0.1；可用 HOST=0.0.0.0 放开
+  const host = opts.host ?? process.env.HOST ?? '127.0.0.1';
+
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      const address = server.address();
+      const realPort = typeof address === 'object' && address ? address.port : port;
+      console.log(`抖音逐帧工具（本机）: http://127.0.0.1:${realPort}`);
+      if (host === '0.0.0.0' || host === '::') {
+        console.log(`也可打开: http://localhost:${realPort}`);
+      }
+      console.log(`CLI: npm run cli -- "<抖音链接>"`);
+      resolve({ app, server, port: realPort, host });
+    });
+    server.on('error', reject);
+  });
+}
+
+const isDirectRun = (() => {
+  try {
+    const entry = process.argv[1] && path.resolve(process.argv[1]);
+    return entry === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
   }
-  console.log(`CLI: npm run cli -- "<抖音链接>"`);
-});
+})();
+
+if (isDirectRun) {
+  await startServer();
+}

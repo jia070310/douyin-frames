@@ -8,24 +8,38 @@ const MOBILE_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
 const DESKTOP_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-const DEFAULT_HEADERS = {
+/** 贴近真实 Chrome 拉 CDN 时的请求头（下载直链用） */
+export const BROWSER_DOWNLOAD_HEADERS = {
   'User-Agent': DESKTOP_UA,
   Accept: '*/*',
-  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+  'Accept-Encoding': 'identity',
   Referer: 'https://www.douyin.com/',
+  Origin: 'https://www.douyin.com',
+  'Sec-Fetch-Dest': 'video',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'cross-site',
+  'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+  'Sec-Ch-Ua-Mobile': '?0',
+  'Sec-Ch-Ua-Platform': '"Windows"',
 };
+
+const DEFAULT_HEADERS = BROWSER_DOWNLOAD_HEADERS;
 
 /**
  * 从任意抖音分享文本/链接中提取可用 URL（优先短链 / 长链）
+ * 支持搜索页弹层：…/search/…?modal_id=数字
  */
 export function extractDouyinUrl(input) {
-  const text = String(input || '').trim();
+  const text = String(input || '')
+    .trim()
+    .replace(/&amp;/gi, '&');
   if (!text) throw new Error('请提供抖音视频链接');
 
   const urlMatch = text.match(
-    /https?:\/\/(?:v\.douyin\.com|(?:www\.)?iesdouyin\.com|(?:www\.)?douyin\.com)\/[^\s"'<>，。；！？）\]]+/i,
+    /https?:\/\/(?:v\.douyin\.com|(?:www\.)?iesdouyin\.com|(?:www\.)?douyin\.com)\/[^\s"'<>，。；！？）\]\u3001\u3002]+/i,
   );
   if (urlMatch?.[0]) {
     return urlMatch[0].replace(/[),.;！？]+$/g, '');
@@ -41,16 +55,33 @@ export function extractDouyinUrl(input) {
 
 /**
  * 从任意抖音分享文本/链接中提取 aweme_id
+ * 含搜索页 / 推荐流弹窗：modal_id、item_id 等
  */
 export function extractAwemeId(input) {
-  const text = String(input || '').trim();
+  const text = String(input || '')
+    .trim()
+    .replace(/&amp;/gi, '&');
   if (!text) throw new Error('请提供抖音视频链接');
 
+  // 优先从 URL 查询参数读取（搜索页 modal_id 最稳）
+  try {
+    const maybeUrl = text.startsWith('http') ? text : extractDouyinUrl(text);
+    if (/^https?:\/\//i.test(maybeUrl)) {
+      const u = new URL(maybeUrl);
+      for (const key of ['modal_id', 'aweme_id', 'item_id', 'itemId', 'video_id']) {
+        const v = u.searchParams.get(key);
+        if (v && /^\d{5,25}$/.test(v)) return v;
+      }
+    }
+  } catch {
+    // fall through to regex
+  }
+
   const patterns = [
+    /[?&#]modal_id=(\d{5,25})/i,
     /douyin\.com\/video\/(\d+)/i,
     /iesdouyin\.com\/share\/video\/(\d+)/i,
-    /aweme_id=(\d+)/i,
-    /modal_id=(\d+)/i,
+    /[?&#](?:aweme_id|item_id|itemId|video_id)=(\d{5,25})/i,
     /\/note\/(\d+)/i,
   ];
 
@@ -62,7 +93,17 @@ export function extractAwemeId(input) {
   // 纯数字 ID
   if (/^\d{15,25}$/.test(text)) return text;
 
-  throw new Error('无法从输入中解析抖音视频 ID，请粘贴完整视频链接或 v.douyin.com 短链');
+  throw new Error(
+    '无法从输入中解析抖音视频 ID。请粘贴作品页链接、v.douyin.com 短链，或带 modal_id 的搜索页链接',
+  );
+}
+
+/**
+ * 若能抽出作品 ID，规范为 https://www.douyin.com/video/{id}
+ */
+export function toCanonicalVideoUrl(input) {
+  const awemeId = extractAwemeId(input);
+  return `https://www.douyin.com/video/${awemeId}`;
 }
 
 /**
@@ -115,13 +156,24 @@ export async function resolveRedirect(url, { maxHops = 8 } = {}) {
 }
 
 /**
- * 将短链 / 分享文案规范成长链（尽量带 aweme_id）
+ * 将短链 / 分享文案 / 搜索页弹层链接规范成作品页长链
  */
 export async function normalizeDouyinInput(input) {
   let url = extractDouyinUrl(input);
   if (/v\.douyin\.com/i.test(url)) {
     url = await resolveRedirect(url);
   }
+
+  // 搜索页、发现页等带 modal_id 的链接 → 标准作品页
+  try {
+    const awemeId = extractAwemeId(url);
+    if (awemeId) {
+      return `https://www.douyin.com/video/${awemeId}`;
+    }
+  } catch {
+    // keep url
+  }
+
   return url;
 }
 
@@ -187,6 +239,7 @@ function digVideoMeta(obj, depth = 0) {
       videoUri: uri,
       videoUrl: url,
       cover: pickBestUrl([v.cover, v.origin_cover, v.dynamic_cover]),
+      via: obj.via || aweme.via || undefined,
     };
   }
 
@@ -234,6 +287,12 @@ async function fetchSharePage(awemeId) {
     `https://www.iesdouyin.com/share/video/${awemeId}`,
     `https://www.douyin.com/video/${awemeId}`,
   ];
+  let cookie = '';
+  try {
+    cookie = await fetchTtwidCookie();
+  } catch {
+    // ignore
+  }
 
   for (const url of urls) {
     try {
@@ -242,6 +301,7 @@ async function fetchSharePage(awemeId) {
           ...DEFAULT_HEADERS,
           'User-Agent': url.includes('iesdouyin') ? MOBILE_UA : DESKTOP_UA,
           Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          ...(cookie ? { Cookie: cookie } : {}),
         },
       });
       if (!res.ok) continue;
@@ -307,14 +367,12 @@ async function resolvePlayUrlByUri(videoUri) {
 }
 
 /**
- * 解析抖音链接，返回可下载的原视频元信息
- * 策略：先轻量 HTML/SSR 解析，失败则用 Playwright 拦截直链
+ * 轻量解析：短链展开 + 分享页 HTML 抽取（纯 HTTP，无浏览器）
  */
-export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
-  let url = await normalizeDouyinInput(inputUrl);
-
+export async function resolveDouyinLight(inputUrl) {
+  const url = await normalizeDouyinInput(inputUrl);
   const awemeId = extractAwemeId(url);
-  let meta = await fetchSharePage(awemeId);
+  let meta = (await fetchSharePage(awemeId)) || (await fetchWebDetail(awemeId));
 
   if (!meta) {
     meta = {
@@ -327,24 +385,154 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
       cover: null,
     };
   }
-
   if (!meta.awemeId) meta.awemeId = awemeId;
 
-  // 优先用 uri 走无水印播放接口
   if (meta.videoUri && !meta.videoUrl) {
     const play = await resolvePlayUrlByUri(meta.videoUri);
     if (play) meta.videoUrl = play;
   }
 
+  if (!meta.videoUrl) {
+    throw new Error('轻量解析未能拿到视频直链（页面可能需登录或被风控）');
+  }
+
+  return {
+    videoUrl: String(meta.videoUrl).replace(/playwm/g, 'play'),
+    meta: {
+      awemeId: meta.awemeId || awemeId,
+      desc: meta.desc || '',
+      author: meta.author || '',
+      pageUrl: `https://www.douyin.com/video/${meta.awemeId || awemeId}`,
+      sourceUrl: url,
+      via: meta.via || 'light-html',
+    },
+  };
+}
+
+/** 尝试拿到 Cookie：优先本机已保存的登录 Cookie，其次纯 HTTP 拿 ttwid */
+async function fetchTtwidCookie() {
+  try {
+    const { loadCookieHeader } = await import('./cookies.js');
+    const saved = await loadCookieHeader();
+    if (saved) return saved;
+  } catch {
+    // ignore
+  }
+  try {
+    const res = await fetch('https://www.douyin.com/', {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': DESKTOP_UA,
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+      },
+    });
+    const raw = res.headers.getSetCookie?.() || [];
+    const joined = Array.isArray(raw) ? raw.join(';') : String(res.headers.get('set-cookie') || '');
+    const m = joined.match(/ttwid=([^;,\s]+)/i);
+    if (m?.[1]) return `ttwid=${m[1]}`;
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+/**
+ * Web detail API（纯 HTTP）
+ */
+async function fetchWebDetail(awemeId) {
+  const cookie = await fetchTtwidCookie();
+  const api = `https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id=${encodeURIComponent(
+    awemeId,
+  )}&aid=6383&device_platform=webapp`;
+
+  try {
+    const res = await fetch(api, {
+      headers: {
+        'User-Agent': DESKTOP_UA,
+        Accept: 'application/json, text/plain, */*',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+        Referer: `https://www.douyin.com/video/${awemeId}`,
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const item = data?.aweme_detail || data?.item_list?.[0] || null;
+    if (!item) return null;
+    const found = digVideoMeta({ aweme_detail: item });
+    if (found) {
+      found.via = 'web-detail-api';
+      if (!found.awemeId) found.awemeId = awemeId;
+    }
+    return found;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 解析抖音链接（本机，一般不必登录）：
+ * 1) 分享页 HTML / Web API
+ * 2) yt-dlp（若可用）
+ * 3) 无头 Edge/Chrome 打开作品页拦直链（与第一版相同，访客即可）
+ */
+export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
+  let url = await normalizeDouyinInput(inputUrl);
+  const awemeId = extractAwemeId(url);
+
+  let meta =
+    (await fetchSharePage(awemeId)) ||
+    (await fetchWebDetail(awemeId)) || {
+      awemeId,
+      desc: '',
+      author: '',
+      duration: null,
+      videoUri: null,
+      videoUrl: null,
+      cover: null,
+    };
+
+  if (!meta.awemeId) meta.awemeId = awemeId;
+
+  if (meta.videoUri && !meta.videoUrl) {
+    const play = await resolvePlayUrlByUri(meta.videoUri);
+    if (play) meta.videoUrl = play;
+  }
+
+  if (!meta.videoUrl) {
+    try {
+      const { resolveViaYtDlp } = await import('./ytDlp.js');
+      const y = await resolveViaYtDlp(url, { autoInstall: true });
+      if (y?.videoUrl) {
+        meta.videoUrl = y.videoUrl;
+        meta.via = 'yt-dlp';
+        if (y.title) meta.desc = meta.desc || y.title;
+        if (y.uploader) meta.author = meta.author || y.uploader;
+      } else if (y?.errorHint) {
+        meta.ytDlpHint = y.errorHint;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   if (!meta.videoUrl && useBrowser) {
-    const { resolveViaBrowser } = await import('./browserResolve.js');
-    const browserMeta = await resolveViaBrowser(url);
-    meta = { ...meta, ...browserMeta };
+    try {
+      const { resolveViaBrowser } = await import('./browserResolve.js');
+      const browserMeta = await resolveViaBrowser(url);
+      meta = { ...meta, ...browserMeta, via: browserMeta.via || 'browser' };
+    } catch (err) {
+      meta.browserHint = err?.message || String(err);
+    }
   }
 
   if (!meta.videoUrl && !meta.videoBuffer) {
+    const bits = [meta.ytDlpHint, meta.browserHint].filter(Boolean).join('；');
+    const hint = bits ? `（${bits}）` : '';
     throw new Error(
-      '未能解析到可下载的视频地址。该视频可能需登录、已删除，或平台接口变更。',
+      `未能解析到视频直链${hint}。可稍后重试，或改用「本地视频」上传。`,
     );
   }
 
@@ -352,47 +540,57 @@ export async function resolveDouyinVideo(inputUrl, { useBrowser = true } = {}) {
     ...meta,
     sourceUrl: url,
     pageUrl: `https://www.douyin.com/video/${meta.awemeId}`,
+    via: meta.via || 'http',
   };
 }
 
 /**
- * 下载视频到本地文件
+ * 下载视频到本地（仅 fetch + 浏览器 Headers，无 Chromium）
  */
 export async function downloadVideo(videoUrl, destPath, { timeoutMs = 120_000 } = {}) {
   await fsp.mkdir(path.dirname(destPath), { recursive: true });
+  try {
+    return await downloadViaFetch(videoUrl, destPath, timeoutMs);
+  } catch (err) {
+    // 换移动 UA 再试一次
+    try {
+      return await downloadViaFetch(videoUrl, destPath, timeoutMs, {
+        ...BROWSER_DOWNLOAD_HEADERS,
+        'User-Agent': MOBILE_UA,
+        Referer: 'https://www.iesdouyin.com/',
+      });
+    } catch (err2) {
+      throw new Error(
+        `直链下载失败：${err?.message || err}；移动 UA 重试亦失败：${err2?.message || err2}`,
+      );
+    }
+  }
+}
 
+async function downloadViaFetch(videoUrl, destPath, timeoutMs, headers = BROWSER_DOWNLOAD_HEADERS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     const res = await fetch(videoUrl, {
       signal: controller.signal,
-      headers: {
-        ...DEFAULT_HEADERS,
-        Referer: 'https://www.douyin.com/',
-      },
+      headers: { ...headers },
       redirect: 'follow',
     });
-
-    if (!res.ok) {
-      throw new Error(`下载失败 HTTP ${res.status}`);
-    }
-
-    if (!res.body) {
-      throw new Error('下载响应无内容');
-    }
-
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.body) throw new Error('下载响应无内容');
     await pipeline(res.body, createWriteStream(destPath));
-
-    const stat = await fsp.stat(destPath);
-    if (stat.size < 1024) {
-      throw new Error('下载的文件过小，可能不是有效视频');
-    }
-
-    return { path: destPath, size: stat.size };
+    return await assertVideoFile(destPath);
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function assertVideoFile(destPath) {
+  const stat = await fsp.stat(destPath);
+  if (stat.size < 1024) {
+    throw new Error('下载的文件过小，可能不是有效视频');
+  }
+  return { path: destPath, size: stat.size };
 }
 
 export function fileExists(p) {

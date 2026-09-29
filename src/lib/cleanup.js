@@ -1,31 +1,29 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { OUTPUT_ROOT, jobDir, ensureDir } from './paths.js';
+import { OUTPUT_ROOT, UPLOADS_ROOT, jobDir, ensureDir } from './paths.js';
 
 const RELEASE_FILE = '.release.json';
 
 /**
- * 环境变量：
- * - CLEANUP_TTL_HOURS           兜底保留时长（小时），默认 24；0=关闭
- * - CLEANUP_INTERVAL_MIN        定期扫描间隔（分钟），默认 30；0=仅启动时
- * - CLEANUP_MAX_MB              output 体积上限（MB），默认 0=不限
- * - CLEANUP_AFTER_RELEASE_MIN   关闭/换任务后延迟清理（分钟），默认 10；0=立即删
+ * 本机工具：默认不做定时/延迟自动清理，由用户点「清理缓存」触发。
+ * 仍可用环境变量覆盖（一般不必）：
+ * - CLEANUP_TTL_HOURS / CLEANUP_INTERVAL_MIN / CLEANUP_MAX_MB / CLEANUP_AFTER_RELEASE_MIN
  */
-
 export function getCleanupConfig() {
-  const ttlHours = numEnv('CLEANUP_TTL_HOURS', 24);
-  const intervalMin = numEnv('CLEANUP_INTERVAL_MIN', 30);
+  const ttlHours = numEnv('CLEANUP_TTL_HOURS', 0);
+  const intervalMin = numEnv('CLEANUP_INTERVAL_MIN', 0);
   const maxMb = numEnv('CLEANUP_MAX_MB', 0);
-  const afterReleaseMin = numEnv('CLEANUP_AFTER_RELEASE_MIN', 10);
+  const afterReleaseMin = numEnv('CLEANUP_AFTER_RELEASE_MIN', -1);
   return {
     ttlMs: ttlHours > 0 ? ttlHours * 60 * 60 * 1000 : 0,
     intervalMs: intervalMin > 0 ? intervalMin * 60 * 1000 : 0,
     maxBytes: maxMb > 0 ? maxMb * 1024 * 1024 : 0,
-    afterReleaseMs: afterReleaseMin >= 0 ? afterReleaseMin * 60 * 1000 : 10 * 60 * 1000,
+    afterReleaseMs: afterReleaseMin >= 0 ? afterReleaseMin * 60 * 1000 : null,
     ttlHours,
     intervalMin,
     maxMb,
     afterReleaseMin,
+    autoEnabled: ttlHours > 0 || intervalMin > 0 || maxMb > 0 || afterReleaseMin >= 0,
     enabled: true,
   };
 }
@@ -38,9 +36,8 @@ function numEnv(name, fallback) {
 }
 
 /**
- * 标记任务为「已关闭 / 已换新任务」，到期后清理
- * @param {string} jobId
- * @param {{ reason?: string, delayMs?: number, jobs?: Map<string, object> }} [opts]
+ * 标记任务为「已关闭 / 已换新任务」
+ * 默认不自动删；仅当 CLEANUP_AFTER_RELEASE_MIN>=0 时按延迟清理。
  */
 export async function releaseJob(jobId, opts = {}) {
   if (!jobId || !/^[a-f0-9]{8,16}$/i.test(jobId)) {
@@ -48,7 +45,12 @@ export async function releaseJob(jobId, opts = {}) {
   }
 
   const cfg = getCleanupConfig();
-  const delayMs = opts.delayMs ?? cfg.afterReleaseMs;
+  const delayMs =
+    opts.delayMs != null
+      ? opts.delayMs
+      : cfg.afterReleaseMs != null
+        ? cfg.afterReleaseMs
+        : null;
   const dir = jobDir(jobId);
   const st = await safeStat(dir);
   if (!st) {
@@ -57,6 +59,13 @@ export async function releaseJob(jobId, opts = {}) {
   }
 
   const now = Date.now();
+
+  // 本机默认：只从内存表拿掉，磁盘保留，等用户手动清理
+  if (delayMs == null) {
+    opts.jobs?.delete(jobId);
+    return { ok: true, jobId, kept: true, message: '任务已关闭，缓存保留至手动清理' };
+  }
+
   const releaseAt = now + Math.max(0, delayMs);
   const payload = {
     jobId,
@@ -77,7 +86,6 @@ export async function releaseJob(jobId, opts = {}) {
     });
   }
 
-  // 延迟为 0：立刻删
   if (delayMs <= 0) {
     const size = await dirSize(dir);
     await fsp.rm(dir, { recursive: true, force: true });
@@ -94,9 +102,6 @@ export async function releaseJob(jobId, opts = {}) {
   };
 }
 
-/**
- * 批量标记（开新任务时释放旧任务）
- */
 export async function releaseJobs(jobIds, opts = {}) {
   const ids = [...new Set((jobIds || []).filter(Boolean))];
   const results = [];
@@ -113,10 +118,11 @@ export async function releaseJobs(jobIds, opts = {}) {
 /**
  * @param {object} [opts]
  * @param {Map<string, object>} [opts.jobs]
+ * @param {boolean} [opts.purgeAll] 立刻清空 output（及 uploads）
  * @param {(msg:string)=>void} [opts.onLog]
  */
 export async function cleanupOutput(opts = {}) {
-  const { jobs, onLog = console.log } = opts;
+  const { jobs, onLog = console.log, purgeAll = false } = opts;
   const cfg = getCleanupConfig();
   await ensureDir(OUTPUT_ROOT);
 
@@ -165,50 +171,60 @@ export async function cleanupOutput(opts = {}) {
   const removed = [];
   let freed = 0;
 
-  // 1) 已标记释放且到期
-  for (const job of jobsOnDisk) {
-    if (!job.releaseAt || job.releaseAt > now) continue;
-    await removeJob(job, jobs);
-    removed.push({ id: job.id, reason: 'released', size: job.size });
-    freed += job.size;
-    job._gone = true;
-  }
-
-  // 2) TTL 兜底
-  if (cfg.ttlMs > 0) {
+  if (purgeAll) {
     for (const job of jobsOnDisk) {
-      if (job._gone) continue;
-      if (now - job.mtimeMs <= cfg.ttlMs) continue;
       await removeJob(job, jobs);
-      removed.push({ id: job.id, reason: 'ttl', size: job.size });
+      removed.push({ id: job.id, reason: 'purge', size: job.size });
       freed += job.size;
       job._gone = true;
     }
-  }
-
-  // 3) 体积上限
-  if (cfg.maxBytes > 0) {
-    let total = jobsOnDisk.filter((j) => !j._gone).reduce((s, j) => s + j.size, 0);
+    freed += await wipeDirContents(UPLOADS_ROOT);
+    jobs?.clear();
+  } else {
+    // 1) 已标记释放且到期（仅当用户开了延迟清理时）
     for (const job of jobsOnDisk) {
-      if (job._gone) continue;
-      if (total <= cfg.maxBytes) break;
+      if (!job.releaseAt || job.releaseAt > now) continue;
       await removeJob(job, jobs);
-      removed.push({ id: job.id, reason: 'quota', size: job.size });
+      removed.push({ id: job.id, reason: 'released', size: job.size });
       freed += job.size;
-      total -= job.size;
       job._gone = true;
     }
-  }
 
-  // 4) 内存表同步
-  if (jobs) {
-    for (const [id, info] of jobs.entries()) {
-      if (info.releaseAt && info.releaseAt <= now) {
-        jobs.delete(id);
-        continue;
+    // 2) TTL 兜底
+    if (cfg.ttlMs > 0) {
+      for (const job of jobsOnDisk) {
+        if (job._gone) continue;
+        if (now - job.mtimeMs <= cfg.ttlMs) continue;
+        await removeJob(job, jobs);
+        removed.push({ id: job.id, reason: 'ttl', size: job.size });
+        freed += job.size;
+        job._gone = true;
       }
-      const age = now - (info.updatedAt || 0);
-      if (cfg.ttlMs > 0 && age > cfg.ttlMs) jobs.delete(id);
+    }
+
+    // 3) 体积上限
+    if (cfg.maxBytes > 0) {
+      let total = jobsOnDisk.filter((j) => !j._gone).reduce((s, j) => s + j.size, 0);
+      for (const job of jobsOnDisk) {
+        if (job._gone) continue;
+        if (total <= cfg.maxBytes) break;
+        await removeJob(job, jobs);
+        removed.push({ id: job.id, reason: 'quota', size: job.size });
+        freed += job.size;
+        total -= job.size;
+        job._gone = true;
+      }
+    }
+
+    if (jobs) {
+      for (const [id, info] of jobs.entries()) {
+        if (info.releaseAt && info.releaseAt <= now) {
+          jobs.delete(id);
+          continue;
+        }
+        const age = now - (info.updatedAt || 0);
+        if (cfg.ttlMs > 0 && age > cfg.ttlMs) jobs.delete(id);
+      }
     }
   }
 
@@ -225,8 +241,17 @@ export async function cleanupOutput(opts = {}) {
   };
 }
 
+/** 手动清空缓存：删除全部抽帧输出与上传临时文件 */
+export async function purgeCache(opts = {}) {
+  return cleanupOutput({ ...opts, purgeAll: true });
+}
+
 export function startCleanupScheduler(opts = {}) {
   const cfg = getCleanupConfig();
+  if (!cfg.autoEnabled) {
+    console.log('[cleanup] 自动清理已关闭（本机工具默认保留缓存，可手动清理）');
+    return () => {};
+  }
 
   const run = () =>
     cleanupOutput(opts).catch((err) => {
@@ -234,7 +259,6 @@ export function startCleanupScheduler(opts = {}) {
     });
 
   const bootTimer = setTimeout(run, 3_000);
-  // 释放队列更频繁检查（每分钟）
   const releaseTimer = setInterval(run, 60_000);
   let intervalTimer = null;
   if (cfg.intervalMs > 0) {
@@ -245,7 +269,8 @@ export function startCleanupScheduler(opts = {}) {
   if (typeof releaseTimer.unref === 'function') releaseTimer.unref();
 
   console.log(
-    `[cleanup] 已启用：关闭/换任务后 ${cfg.afterReleaseMin} 分钟清理` +
+    `[cleanup] 已启用自动清理` +
+      (cfg.afterReleaseMin >= 0 ? `：关闭后 ${cfg.afterReleaseMin} 分钟` : '') +
       (cfg.ttlHours ? `；兜底保留 ${cfg.ttlHours}h` : '') +
       (cfg.maxMb ? `；上限 ${cfg.maxMb}MB` : ''),
   );
@@ -255,6 +280,23 @@ export function startCleanupScheduler(opts = {}) {
     clearInterval(releaseTimer);
     if (intervalTimer) clearInterval(intervalTimer);
   };
+}
+
+async function wipeDirContents(root) {
+  let freed = 0;
+  try {
+    await ensureDir(root);
+    const entries = await fsp.readdir(root, { withFileTypes: true });
+    for (const ent of entries) {
+      const p = path.join(root, ent.name);
+      const size = ent.isDirectory() ? await dirSize(p) : (await safeStat(p))?.size || 0;
+      await fsp.rm(p, { recursive: true, force: true });
+      freed += size;
+    }
+  } catch {
+    // ignore
+  }
+  return freed;
 }
 
 async function readRelease(dir) {
@@ -315,3 +357,5 @@ function formatBytes(n) {
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
+
+export { formatBytes };

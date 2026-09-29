@@ -2,114 +2,329 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>抖音视频逐帧提取</title>
-    <link rel="stylesheet" href="/styles.css?v=10" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <title>Douyin Frames</title>
+    <link rel="icon" type="image/png" href="/icons/icon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-128.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650&family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css?v=41" />
   </head>
   <body>
-    <main class="wrap">
-      <header class="hero">
-        <p class="brand">Douyin Frames</p>
-        <h1>视频链接 → 原片 → 逐帧图片</h1>
-        <p class="sub">粘贴抖音视频链接，下载原视频并用 FFmpeg 导出帧序列，便于后续部署到网站。</p>
+    <div class="app">
+      <!-- 无边框窗口标题栏 -->
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="titlebar__left" data-tauri-drag-region>
+          <img class="titlebar__mark" src="/icons/icon-32.png" width="16" height="16" alt="" />
+          <span class="titlebar__name">Douyin Frames</span>
+          <span class="titlebar__badge">本机</span>
+          <button type="button" class="titlebar__about" id="aboutOpen" title="关于">关于</button>
+        </div>
+        <div class="titlebar__center" data-tauri-drag-region>视频抽帧</div>
+        <div class="titlebar__controls">
+          <button type="button" class="win-btn win-btn--min" id="winMin" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 10 10" width="7" height="7" aria-hidden="true">
+              <path d="M2 5h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+            </svg>
+          </button>
+          <button type="button" class="win-btn win-btn--max" id="winMax" title="最大化" aria-label="最大化">
+            <svg class="win-btn__max-icon" viewBox="0 0 10 10" width="7" height="7" aria-hidden="true">
+              <path d="M2 5h6M5 2v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+            </svg>
+            <svg class="win-btn__restore-icon" viewBox="0 0 10 10" width="7" height="7" aria-hidden="true">
+              <path d="M2.5 2.5h5v5h-5z" stroke="currentColor" stroke-width="1.2" fill="none" />
+            </svg>
+          </button>
+          <button type="button" class="win-btn win-btn--close" id="winClose" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 10 10" width="7" height="7" aria-hidden="true">
+              <path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none" />
+            </svg>
+          </button>
+        </div>
       </header>
 
-      <form id="form" class="panel" method="post" action="#" novalidate>
-        <label class="field">
-          <span>抖音视频链接</span>
-          <div class="input-with-clear">
-            <input
-              id="url"
-              name="url"
-              type="text"
-              inputmode="url"
-              required
-              autocomplete="off"
-              placeholder="例如 https://v.douyin.com/… 或完整视频链接"
-            />
-            <button
-              type="button"
-              id="urlClear"
-              class="clear-btn"
-              hidden
-              aria-label="清除链接"
-              title="清除"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                <path
-                  fill="currentColor"
-                  d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4z"
+      <div class="app-body">
+        <aside class="sidebar">
+          <p id="agentStatus" class="app-chip is-on" aria-live="polite">本机就绪</p>
+
+          <form id="form" class="sidebar__form" method="post" action="#" novalidate>
+            <section class="block">
+              <h2 class="block__title">输入</h2>
+              <label class="field">
+                <span>抖音链接</span>
+                <div class="input-with-clear">
+                  <input
+                    id="url"
+                    name="url"
+                    type="text"
+                    inputmode="url"
+                    autocomplete="off"
+                    placeholder="作品页 / 短链 / 搜索页（含 modal_id）均可"
+                  />
+                  <button type="button" id="urlClear" class="clear-btn" hidden aria-label="清除链接">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                      <path
+                        fill="currentColor"
+                        d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4z"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </label>
+
+              <label class="field">
+                <span>本地视频</span>
+                <input
+                  id="videoFile"
+                  name="videoFile"
+                  type="file"
+                  accept="video/*,.mp4,.mov,.webm,.mkv"
                 />
-              </svg>
-            </button>
+              </label>
+
+              <details class="advanced">
+                <summary>高级 · 直链 / Cookie / 书签</summary>
+                <p class="hint-block">
+                  作品页即使弹出「登录」也能播放：登录窗口不影响看视频。本机脚本拿不到浏览器里的访客 Cookie 时，用下面任一方式即可（都不必登录账号）。
+                </p>
+                <label class="field">
+                  <span>一键书签（推荐）</span>
+                  <p class="hint-block">
+                    把
+                    <a id="bookmarkletLink" class="bookmarklet-link" href="#">抖音抽帧</a>
+                    拖到浏览器收藏栏 → 打开并播放作品 → 点该收藏 → 自动带回直链抽帧。
+                  </p>
+                </label>
+                <label class="field">
+                  <span>play / .mp4</span>
+                  <div class="input-with-clear">
+                    <input
+                      id="videoUrl"
+                      name="videoUrl"
+                      type="text"
+                      inputmode="url"
+                      autocomplete="off"
+                      placeholder="已有无水印直链"
+                    />
+                    <button
+                      type="button"
+                      id="videoUrlClear"
+                      class="clear-btn"
+                      hidden
+                      aria-label="清除直链"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path
+                          fill="currentColor"
+                          d="M18.3 5.7a1 1 0 0 0-1.4 0L12 10.6 7.1 5.7a1 1 0 0 0-1.4 1.4l4.9 4.9-4.9 4.9a1 1 0 1 0 1.4 1.4l4.9-4.9 4.9 4.9a1 1 0 0 0 1.4-1.4L13.4 12l4.9-4.9a1 1 0 0 0 0-1.4z"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>抖音 Cookie（可选，访客即可）</span>
+                  <textarea
+                    id="douyinCookie"
+                    name="douyinCookie"
+                    rows="3"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="一般不用。Edge 打开过作品页后，F12 → Network → 复制 Cookie"
+                  ></textarea>
+                  <div class="cookie-actions">
+                    <button type="button" id="cookieSave" class="btn-secondary">保存 Cookie</button>
+                    <button type="button" id="cookieClear" class="btn-ghost">清除</button>
+                    <span id="cookieStatus" class="muted" aria-live="polite"></span>
+                  </div>
+                </label>
+              </details>
+            </section>
+
+            <section class="block">
+              <h2 class="block__title">导出</h2>
+              <div class="grid">
+                <label class="field">
+                  <span>采样</span>
+                  <select id="mode" name="mode">
+                    <option value="every">逐帧</option>
+                    <option value="fps">按帧率</option>
+                    <option value="seconds">按间隔</option>
+                  </select>
+                </label>
+
+                <label class="field" id="fpsField" hidden>
+                  <span>fps</span>
+                  <input id="fps" name="fps" type="number" min="0.1" step="0.1" value="1" />
+                </label>
+
+                <label class="field" id="intervalField" hidden>
+                  <span>间隔(秒)</span>
+                  <input id="interval" name="interval" type="number" min="0.1" step="0.1" value="1" />
+                </label>
+
+                <label class="field">
+                  <span>格式</span>
+                  <select id="format" name="format">
+                    <option value="jpg">JPG</option>
+                    <option value="png">PNG</option>
+                    <option value="webp">WebP</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+
+            <p class="hint">解析与抽帧均在本机完成。也可 CLI：<code>npm run cli -- "链接"</code></p>
+
+            <div class="sidebar__actions">
+              <button type="button" id="submit" class="btn-primary">开始提取</button>
+              <button type="button" id="clearCache" class="btn-ghost">清理缓存</button>
+            </div>
+          </form>
+        </aside>
+
+        <main class="workspace">
+          <section id="status" class="status-panel" hidden>
+            <p id="statusText">准备中…</p>
+            <div class="bar"><div id="barFill"></div></div>
+          </section>
+
+          <section id="result" class="result-panel" hidden>
+            <div class="result-head">
+              <div class="meta" id="meta"></div>
+              <div class="actions">
+                <a id="videoLink" href="#" target="_blank" rel="noopener">原视频</a>
+                <a id="jsonLink" href="#" target="_blank" rel="noopener">JSON</a>
+                <a id="openFrame" href="#" target="_blank" rel="noopener">打开帧</a>
+                <button type="button" id="saveFrame" class="linkish">保存帧</button>
+                <button type="button" id="closeJob" class="linkish">关闭</button>
+              </div>
+            </div>
+
+            <div class="viewer" id="viewer" hidden>
+              <div class="viewer__stage" title="单击查看大图，按住左右拖动切帧">
+                <button type="button" class="viewer__nav viewer__nav--prev" id="prevBtn" aria-label="上一帧">
+                  ‹
+                </button>
+                <img id="viewerImg" class="viewer__img" alt="当前帧预览" />
+                <button type="button" class="viewer__nav viewer__nav--next" id="nextBtn" aria-label="下一帧">
+                  ›
+                </button>
+              </div>
+              <div class="viewer__toolbar">
+                <span id="viewerIndex">0 / 0</span>
+                <input
+                  id="viewerSlider"
+                  class="viewer__slider"
+                  type="range"
+                  min="0"
+                  max="0"
+                  value="0"
+                  step="1"
+                />
+                <button type="button" id="playToggle" class="viewer__play">自动播放</button>
+              </div>
+              <div class="viewer__strip" id="viewerStrip" aria-label="帧缩略图"></div>
+            </div>
+          </section>
+
+          <div class="workspace-empty" id="emptyState">
+            <div class="empty-card">
+              <img class="empty-icon" src="/icons/icon-128.png" width="56" height="56" alt="" />
+              <p class="empty-title">等待任务</p>
+              <p class="empty-desc">在左侧粘贴抖音链接或选择本地视频，结果与预览会出现在这里。</p>
+            </div>
           </div>
-        </label>
+        </main>
+      </div>
 
-        <div class="grid">
-          <label class="field">
-            <span>采样方式</span>
-            <select id="mode" name="mode">
-              <option value="every">逐帧（每帧一张）</option>
-              <option value="fps">按帧率采样</option>
-              <option value="seconds">按时间间隔</option>
-            </select>
-          </label>
+      <footer class="statusbar">
+        <span class="statusbar__item">FFmpeg · WebView2</span>
+        <button type="button" class="statusbar__link" id="aboutOpenFooter">关于</button>
+        <span class="statusbar__item" id="statusBarHint">localhost</span>
+      </footer>
+    </div>
 
-          <label class="field" id="fpsField" hidden>
-            <span>每秒帧数 (fps)</span>
-            <input id="fps" name="fps" type="number" min="0.1" step="0.1" value="1" />
-          </label>
-
-          <label class="field" id="intervalField" hidden>
-            <span>间隔秒数</span>
-            <input id="interval" name="interval" type="number" min="0.1" step="0.1" value="1" />
-          </label>
-
-          <label class="field">
-            <span>图片格式</span>
-            <select id="format" name="format">
-              <option value="jpg">JPG</option>
-              <option value="png">PNG</option>
-              <option value="webp">WebP</option>
-            </select>
-          </label>
+    <div id="aboutDialog" class="about" hidden aria-modal="true" role="dialog" aria-labelledby="aboutTitle">
+      <button type="button" class="about__backdrop" id="aboutBackdrop" aria-label="关闭"></button>
+      <div class="about__panel">
+        <button type="button" class="about__close" id="aboutClose" aria-label="关闭">×</button>
+        <div class="about__hero">
+          <img class="about__icon" src="/icons/icon-128.png" width="72" height="72" alt="" />
+          <div class="about__brand">
+            <h1 id="aboutTitle" class="about__title">Douyin Frames</h1>
+            <p class="about__tag">本机抖音抽帧工具</p>
+            <p class="about__ver" id="aboutVersion">v1.1.0</p>
+          </div>
         </div>
 
-        <p class="hint">提示：完整「逐帧」会生成大量图片。长视频建议先用「按帧率」或「按时间间隔」试跑。</p>
+        <p class="about__lead">
+          在你自己的电脑上解析抖音链接（或本地视频），用 FFmpeg 导出逐帧图片。
+          数据不出本机，不作为在线站点使用。
+        </p>
 
-        <button type="button" id="submit">开始提取</button>
-      </form>
-
-      <section id="status" class="panel status" hidden>
-        <p id="statusText">准备中…</p>
-        <div class="bar"><div id="barFill"></div></div>
-      </section>
-
-      <section id="result" class="panel result" hidden>
-        <div class="meta" id="meta"></div>
-        <div class="actions">
-          <a id="videoLink" href="#" target="_blank" rel="noopener">下载原视频</a>
-          <a id="jsonLink" href="#" target="_blank" rel="noopener">查看结果 JSON</a>
-          <a id="openFrame" href="#" target="_blank" rel="noopener">打开当前帧</a>
-          <button type="button" id="saveFrame" class="linkish">保存当前帧</button>
-          <button type="button" id="closeJob" class="linkish">关闭任务</button>
+        <div class="about__grid">
+          <section class="about__card">
+            <h2>能做什么</h2>
+            <ul>
+              <li>粘贴抖音作品链接 / 短链抽帧</li>
+              <li>上传本地视频按帧或按间隔导出</li>
+              <li>JPG / PNG / WebP，本机预览与保存</li>
+              <li>手动清理缓存，不自动删你的结果</li>
+            </ul>
+          </section>
+          <section class="about__card">
+            <h2>怎么解析</h2>
+            <ol>
+              <li>优先纯 HTTP 解析</li>
+              <li>可选走 yt-dlp</li>
+              <li>本机 Edge / Chrome 拦直链（一般不必登录）</li>
+            </ol>
+          </section>
         </div>
 
-        <div class="viewer" id="viewer" hidden>
-          <div class="viewer__stage">
-            <button type="button" class="viewer__nav viewer__nav--prev" id="prevBtn" aria-label="上一帧">‹</button>
-            <img id="viewerImg" class="viewer__img" alt="当前帧预览" />
-            <button type="button" class="viewer__nav viewer__nav--next" id="nextBtn" aria-label="下一帧">›</button>
-          </div>
-          <div class="viewer__toolbar">
-            <span id="viewerIndex">0 / 0</span>
-            <input id="viewerSlider" class="viewer__slider" type="range" min="0" max="0" value="0" step="1" />
-            <button type="button" id="playToggle" class="viewer__play">自动播放</button>
-          </div>
-          <div class="viewer__strip" id="viewerStrip" aria-label="帧缩略图"></div>
-        </div>
-      </section>
-    </main>
-    <script src="/app.js?v=12" type="module"></script>
+        <section class="about__card about__card--wide">
+          <h2>使用提示</h2>
+          <ul>
+            <li>解析失败时：上传本地视频，或用「高级」里的书签从已打开的作品页带回直链</li>
+            <li>CLI：<code>npm run cli -- "&lt;抖音链接&gt;"</code></li>
+            <li>安装版不内置 Node / FFmpeg，首次运行检测不到会下载到本机缓存</li>
+            <li>便携版也可双击 <code>DouyinFrames.exe</code> 使用</li>
+          </ul>
+        </section>
+
+        <p class="about__repo">
+          仓库：
+          <a
+            href="https://github.com/jia070310/douyin-frames"
+            target="_blank"
+            rel="noopener noreferrer"
+            >https://github.com/jia070310/douyin-frames</a
+          >
+        </p>
+        <p class="about__foot">MIT · 仅供个人本机使用 · 请遵守平台与当地法规</p>
+      </div>
+    </div>
+
+    <div id="frameLightbox" class="lightbox" hidden aria-modal="true" role="dialog" aria-label="帧大图">
+      <button type="button" class="lightbox__backdrop" id="lightboxBackdrop" aria-label="关闭"></button>
+      <div class="lightbox__panel">
+        <button type="button" class="lightbox__close" id="lightboxClose" aria-label="关闭">×</button>
+        <button type="button" class="lightbox__nav lightbox__nav--prev" id="lightboxPrev" aria-label="上一帧">
+          ‹
+        </button>
+        <img id="lightboxImg" class="lightbox__img" alt="大图预览" />
+        <button type="button" class="lightbox__nav lightbox__nav--next" id="lightboxNext" aria-label="下一帧">
+          ›
+        </button>
+        <p class="lightbox__meta" id="lightboxMeta"></p>
+      </div>
+    </div>
+
+    <script src="/app.js?v=40" type="module"></script>
   </body>
 </html>

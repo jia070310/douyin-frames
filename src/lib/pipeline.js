@@ -7,7 +7,9 @@ import { ensureDir, jobDir, OUTPUT_ROOT } from './paths.js';
 
 /**
  * @typedef {object} ExtractOptions
- * @property {string} [url]
+ * @property {string} [url] 抖音分享/作品链接（本机解析）
+ * @property {string} [videoUrl] 已解析的视频直链（跳过解析，直接下载）
+ * @property {object} [meta] 与 videoUrl 配套的元信息
  * @property {string} [localVideo] 本地视频路径（跳过抖音下载）
  * @property {'every'|'fps'|'seconds'} [mode]
  * @property {number} [fps]
@@ -15,15 +17,20 @@ import { ensureDir, jobDir, OUTPUT_ROOT } from './paths.js';
  * @property {'jpg'|'png'|'webp'} [format]
  * @property {number} [quality]
  * @property {string} [jobId]
+ * @property {boolean} [allowUrlResolve] 是否允许仅凭分享链本机解析（默认开；ALLOW_URL_RESOLVE=0 关闭）
  * @property {(evt:{stage:string,message?:string,progress?:object})=>void} [onEvent]
  */
 
 /**
- * 完整流水线：解析 → 下载原视频 → 逐帧出图
+ * 完整流水线（本机工具）：
+ * - videoUrl / localVideo → 下载或复制 → FFmpeg 抽帧
+ * - url → 本机解析（Playwright）→ 下载 → 抽帧
  */
 export async function runExtractJob(options) {
   const {
     url,
+    videoUrl,
+    meta: inputMeta,
     localVideo,
     mode = 'every',
     fps = 1,
@@ -32,10 +39,12 @@ export async function runExtractJob(options) {
     quality = 2,
     jobId = crypto.randomBytes(6).toString('hex'),
     onEvent,
+    allowUrlResolve = process.env.ALLOW_URL_RESOLVE !== '0' &&
+      process.env.ALLOW_SERVER_RESOLVE !== '0',
   } = options;
 
-  if (!url && !localVideo) {
-    throw new Error('请提供抖音 url 或 localVideo 本地视频路径');
+  if (!url && !localVideo && !videoUrl) {
+    throw new Error('请提供抖音链接、videoUrl 直链，或 localVideo 本地文件');
   }
 
   const emit = (stage, message, progress) =>
@@ -49,11 +58,12 @@ export async function runExtractJob(options) {
   await ensureDir(framesPath);
 
   let meta = {
-    awemeId: '',
-    desc: '',
-    author: '',
-    pageUrl: '',
-    sourceUrl: url || localVideo,
+    awemeId: inputMeta?.awemeId || '',
+    desc: inputMeta?.desc || '',
+    author: inputMeta?.author || '',
+    pageUrl: inputMeta?.pageUrl || '',
+    sourceUrl: inputMeta?.sourceUrl || url || videoUrl || localVideo,
+    via: inputMeta?.via || '',
   };
 
   if (localVideo) {
@@ -61,18 +71,23 @@ export async function runExtractJob(options) {
     await fsp.copyFile(localVideo, videoPath);
     const stat = await fsp.stat(videoPath);
     if (stat.size < 1024) throw new Error('本地视频文件过小或无效');
-  } else {
-    emit('resolve', '正在解析抖音视频地址…');
+  } else if (videoUrl) {
+    emit('download', '正在按直链下载原视频…');
+    meta.via = meta.via || 'direct-url';
+    await downloadVideo(videoUrl, videoPath);
+  } else if (allowUrlResolve && url) {
+    emit('resolve', '本机正在解析抖音视频地址…');
     meta = await resolveDouyinVideo(url);
 
-    emit('download', '正在下载原视频…');
+    emit('download', '本机正在下载原视频…');
     if (meta.videoBuffer && Buffer.isBuffer(meta.videoBuffer)) {
       await fsp.writeFile(videoPath, meta.videoBuffer);
-      // 不把巨大 buffer 写入 result.json
       delete meta.videoBuffer;
     } else {
       await downloadVideo(meta.videoUrl, videoPath);
     }
+  } else {
+    throw new Error('未开启链接解析。请提供 videoUrl 直链，或上传/指定本地视频文件。');
   }
 
   const downloaded = await fsp.stat(videoPath);

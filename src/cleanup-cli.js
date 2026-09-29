@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-import { cleanupOutput, getCleanupConfig } from './lib/cleanup.js';
+import { purgeCache, getCleanupConfig } from './lib/cleanup.js';
 
 const cfg = getCleanupConfig();
 console.log('清理配置:', {
+  autoEnabled: cfg.autoEnabled,
   ttlHours: cfg.ttlHours,
   intervalMin: cfg.intervalMin,
   maxMb: cfg.maxMb,
-  enabled: cfg.enabled,
 });
 
-const result = await cleanupOutput();
+const result = await purgeCache();
 console.log(
   JSON.stringify(
     {

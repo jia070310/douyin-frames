@@ -1,0 +1,23 @@
+Douyin Frames 便携包（轻量）
+============================
+
+占用最小：不打包 Chromium / Electron / Tauri / 预置 FFmpeg。
+使用本机 Edge 或 Chrome（--app 窗口）+ Node.js。
+
+启动
+----
+双击 DouyinFrames.vbs（无黑窗）
+或 DouyinFrames.cmd
+
+依赖
+----
+1. Node.js 18+（系统安装，或把 node.exe 放到 tools\node\）
+2. Edge 或 Chrome（Windows 通常已有 Edge）
+3. FFmpeg：有 PATH 则直接用；没有则首次运行自动下载精简版到
+   %APPDATA%\DouyinFrames\runtime\
+
+解析抖音时优先本机 Edge/Chrome 无头（不必另装 Playwright 浏览器，也不必登录）
+
+卸载
+----
+删除本目录；可选清理 %APPDATA%\DouyinFrames

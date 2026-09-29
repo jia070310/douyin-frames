@@ -1,20 +1,30 @@
 {
   "name": "douyin-frames",
-  "version": "1.0.0",
-  "description": "从抖音链接提取原视频并逐帧转为图片",
+  "version": "1.1.0",
+  "description": "本机工具：解析抖音并 FFmpeg 抽帧（HTTP → yt-dlp → 本机 Edge/Chrome，一般不必登录）",
   "type": "module",
-  "main": "src/server.js",
+  "main": "src/cli.js",
   "bin": {
     "douyin-frames": "./src/cli.js"
   },
   "scripts": {
     "start": "node src/server.js",
-    "start:prod": "NODE_ENV=production HOST=127.0.0.1 PORT=3780 node src/server.js",
+    "start:prod": "NODE_ENV=production PORT=3780 node src/server.js",
     "dev": "node --watch src/server.js",
     "cli": "node src/cli.js",
     "extract": "node src/cli.js",
     "cleanup": "node src/cleanup-cli.js",
-    "postinstall": "npx playwright install chromium"
+    "desktop": "node src/desktop.js",
+    "desktop:tauri": "tauri dev",
+    "dist:tauri": "tauri build",
+    "build:tauri": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-tauri.ps1",
+    "build:tauri:release": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-tauri.ps1 -Release",
+    "pack": "node scripts/pack-portable.mjs",
+    "pack:portable": "node scripts/pack-portable.mjs",
+    "pack:setup": "node scripts/pack-setup.mjs",
+    "pack:lite": "node scripts/pack-lite.mjs",
+    "pack:lite:node": "node scripts/pack-lite.mjs --with-node",
+    "postinstall": "node -e \"process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD='1'\""
   },
   "engines": {
     "node": ">=18"
@@ -26,9 +36,15 @@
     "video"
   ],
   "license": "MIT",
+  "author": "jinchan",
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "playwright": "^1.63.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6"
   }
 }

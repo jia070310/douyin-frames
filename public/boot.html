@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Douyin Frames</title>
+    <link rel="icon" type="image/png" href="/icons/icon-32.png" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #1b1e24;
+        --text: #e8eaef;
+        --muted: #9aa3b2;
+        --accent: #3ecf8e;
+        --danger: #e86a62;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .box {
+        min-height: 100%;
+        display: grid;
+        place-content: center;
+        gap: 14px;
+        text-align: center;
+        padding: 28px;
+      }
+      .mark {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto;
+        border-radius: 14px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+        object-fit: cover;
+        display: block;
+      }
+      .title {
+        font-size: 20px;
+        font-weight: 650;
+      }
+      .msg {
+        color: var(--muted);
+        font-size: 13px;
+        min-height: 1.5em;
+        max-width: 36rem;
+        margin: 0 auto;
+        white-space: pre-wrap;
+      }
+      .msg.is-error {
+        color: var(--danger);
+      }
+      .bar {
+        width: min(360px, 80vw);
+        height: 6px;
+        margin: 4px auto 0;
+        border-radius: 99px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+      .fill {
+        height: 100%;
+        width: 12%;
+        background: var(--accent);
+        border-radius: inherit;
+        transition: width 0.25s ease;
+      }
+      .hint {
+        font-size: 12px;
+        color: var(--muted);
+        opacity: 0.8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <img class="mark" src="/icons/icon-128.png" width="56" height="56" alt="" />
+      <div class="title">Douyin Frames</div>
+      <p class="msg" id="msg">正在准备本机环境…</p>
+      <div class="bar"><div class="fill" id="fill"></div></div>
+      <p class="hint">使用系统 Edge/Chrome 应用窗口 · 不附带 Electron</p>
+    </div>
+    <script>
+      const msg = document.getElementById('msg');
+      const fill = document.getElementById('fill');
+
+      async function tick() {
+        try {
+          const res = await fetch('/api/boot');
+          const data = await res.json();
+          if (data.message) msg.textContent = data.message;
+          msg.classList.toggle('is-error', data.stage === 'error');
+          if (typeof data.percent === 'number') {
+            fill.style.width = Math.max(8, Math.min(100, data.percent)) + '%';
+          }
+          if (data.ready) {
+            const q = new URLSearchParams(location.search);
+            const shell = q.get('shell') === '1' ? '?shell=1' : '';
+            location.replace('/' + shell);
+            return;
+          }
+          if (data.stage === 'error') return;
+        } catch {
+          msg.textContent = '等待本机服务…';
+        }
+        setTimeout(tick, 500);
+      }
+      tick();
+    </script>
+  </body>
+</html>
